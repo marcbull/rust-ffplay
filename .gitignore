@@ -10,3 +10,7 @@
 **/*.rs.bk
 
 *.code-workspace
+
+# Added by cargo
+
+/target
