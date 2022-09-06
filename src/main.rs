@@ -75,21 +75,21 @@ fn main() -> Result<(), ffmpeg::Error> {
                     _ => Err(err),
                 },
                 Ok(()) => {
-                let mut rgb_frame = Video::empty();
-                scaler.run(&decoded, &mut rgb_frame)?;
+                    let mut rgb_frame = Video::empty();
+                    scaler.run(&decoded, &mut rgb_frame)?;
 
                     let pts = decoded.pts().unwrap();
                     println!("write to texture {pts}");
-                texture
-                    .with_lock(None, |buffer: &mut [u8], _pitch: usize| {
-                        assert!(rgb_frame.planes() == 1);
-                        rgb_frame.data(0).read_exact(buffer).unwrap();
-                    })
-                    .unwrap();
+                    texture
+                        .with_lock(None, |buffer: &mut [u8], _pitch: usize| {
+                            assert!(rgb_frame.planes() == 1);
+                            rgb_frame.data(0).read_exact(buffer).unwrap();
+                        })
+                        .unwrap();
 
-                frame_index += 1;
+                    frame_index += 1;
                     Ok(false)
-            }
+                }
             }
         };
 
