@@ -44,9 +44,10 @@ fn main() -> Result<(), ffmpeg::Error> {
 
         let texture_creator = canvas.texture_creator();
 
-        let video_queue = Arc::new(BlockingDelayQueue::new_with_capacity(16));
+        let video_queue = Arc::new(BlockingDelayQueue::new_with_capacity(60));
 
         let mut sent_eof = false;
+        let mut last_pts: i64 = 0;
 
         let video_producer_queue = video_queue.clone();
         let video_producer_handle: JoinHandle<Result<(), ffmpeg::Error>> =
@@ -84,7 +85,23 @@ fn main() -> Result<(), ffmpeg::Error> {
                                 let mut rgb_frame = Video::empty();
                                 scaler.run(&decoded, &mut rgb_frame)?;
                                 rgb_frame.set_pts(decoded.pts());
-                                video_producer_queue.add(DelayItem::new(rgb_frame, Instant::now()));
+
+                                let deocded_pts = decoded.pts().unwrap();
+                                // Get the time base of the stream
+                                let time_base = decoder.time_base();
+                                let time_base =
+                                    time_base.numerator() as f64 / time_base.denominator() as f64;
+                                // Calculate duration in seconds.
+                                let frame_duration = (deocded_pts - last_pts) as f64 * time_base;
+                                // Convert to ms:
+                                // let frame_duration = (frame_duration * 1000_f64) as u64;
+                                let frame_duration = frame_duration as u64;
+
+                                last_pts = deocded_pts;
+                                video_producer_queue.add(DelayItem::new(
+                                    rgb_frame,
+                                    Instant::now() + Duration::from_millis(frame_duration),
+                                ));
                                 Ok(false)
                             }
                         }
