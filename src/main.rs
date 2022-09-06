@@ -64,12 +64,22 @@ fn main() -> Result<(), ffmpeg::Error> {
                                                      texture: &mut Texture|
          -> Result<bool, ffmpeg::Error> {
             let mut decoded = Video::empty();
-            let mut got_frame = false;
-            if decoder.receive_frame(&mut decoded).is_ok() {
+            let status = decoder.receive_frame(&mut decoded);
+            match status {
+                Err(err) => match err {
+                    ffmpeg::Error::Eof => Ok(true),
+                    ffmpeg::Error::Other { errno } => match errno {
+                        ffmpeg::util::error::EAGAIN => Ok(false),
+                        _ => Err(ffmpeg::Error::Other { errno }),
+                    },
+                    _ => Err(err),
+                },
+                Ok(()) => {
                 let mut rgb_frame = Video::empty();
                 scaler.run(&decoded, &mut rgb_frame)?;
 
-                println!("write to texture");
+                    let pts = decoded.pts().unwrap();
+                    println!("write to texture {pts}");
                 texture
                     .with_lock(None, |buffer: &mut [u8], _pitch: usize| {
                         assert!(rgb_frame.planes() == 1);
@@ -78,9 +88,9 @@ fn main() -> Result<(), ffmpeg::Error> {
                     .unwrap();
 
                 frame_index += 1;
-                got_frame = true;
+                    Ok(false)
             }
-            Ok(got_frame)
+            }
         };
 
         'running: loop {
@@ -105,7 +115,10 @@ fn main() -> Result<(), ffmpeg::Error> {
                 decoder.send_eof()?;
             }
 
-            let _pts = receive_and_process_decoded_frame(&mut decoder, &mut texture)?;
+            let is_eof = receive_and_process_decoded_frame(&mut decoder, &mut texture)?;
+            if is_eof {
+                break 'running;
+            }
 
             canvas.copy(&texture, None, None).unwrap();
 
