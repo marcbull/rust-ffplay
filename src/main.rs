@@ -60,18 +60,6 @@ fn main() -> Result<(), ffmpeg::Error> {
         let mut frame_index = 0;
         let mut sent_eof = false;
 
-        /*         let mut receive_and_process_decoded_frames =
-                   |decoder: &mut ffmpeg::decoder::Video| -> Result<(), ffmpeg::Error> {
-                       let mut decoded = Video::empty();
-                       while decoder.receive_frame(&mut decoded).is_ok() {
-                           let mut rgb_frame = Video::empty();
-                           scaler.run(&decoded, &mut rgb_frame)?;
-                           save_file(&rgb_frame, frame_index).unwrap();
-                           frame_index += 1;
-                       }
-                       Ok(())
-                   };
-        */
         let mut receive_and_process_decoded_frame = |decoder: &mut ffmpeg::decoder::Video,
                                                      texture: &mut Texture|
          -> Result<bool, ffmpeg::Error> {
