@@ -6,6 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+# crates used in player (and main)
 blocking-delay-queue = { path = "./blocking-delay-queue" }
 ffmpeg-next = "5.1.1"
+error-stack = "0.1.1"
+# crates only used in main
 sdl2 = "0.35.2"
