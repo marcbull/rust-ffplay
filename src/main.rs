@@ -2,18 +2,26 @@ extern crate ffmpeg_next as ffmpeg;
 extern crate sdl2;
 
 use blocking_delay_queue::{BlockingDelayQueue, DelayItem};
-use ffmpeg::format::{input, Pixel};
-use ffmpeg::media::Type;
-use ffmpeg::software::scaling::{context::Context, flag::Flags};
-use ffmpeg::util::frame::video::Video;
-use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::{Color, PixelFormatEnum};
-use std::env;
-use std::io::prelude::*;
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use ffmpeg::{
+    format::{input, Pixel},
+    mathematics::Rounding,
+    media::Type,
+    software::scaling::{context::Context, flag::Flags},
+    util::frame::video::Video,
+    {Rational, Rescale},
+};
+use sdl2::{
+    event::Event,
+    keyboard::Keycode,
+    pixels::{Color, PixelFormatEnum},
+};
+use std::{
+    env,
+    io::prelude::*,
+    sync::Arc,
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
+};
 
 fn main() -> Result<(), ffmpeg::Error> {
     ffmpeg::init().unwrap();
@@ -26,6 +34,7 @@ fn main() -> Result<(), ffmpeg::Error> {
             .best(Type::Video)
             .ok_or(ffmpeg::Error::StreamNotFound)?;
         let video_stream_index = input.index();
+        let video_stream_tb = input.time_base();
 
         let context_decoder = ffmpeg::codec::context::Context::from_parameters(input.parameters())?;
         let mut decoder = context_decoder.decoder().video()?;
@@ -47,7 +56,7 @@ fn main() -> Result<(), ffmpeg::Error> {
         let video_queue = Arc::new(BlockingDelayQueue::new_with_capacity(60));
 
         let mut sent_eof = false;
-        let mut last_pts: i64 = 0;
+        let mut last_frame_time: u64 = 0;
 
         let video_producer_queue = video_queue.clone();
         let video_producer_handle: JoinHandle<Result<(), ffmpeg::Error>> =
@@ -62,9 +71,12 @@ fn main() -> Result<(), ffmpeg::Error> {
                     Flags::BILINEAR,
                 )?;
 
+                let mut presentation_time = Instant::now();
+
                 let mut receive_and_process_decoded_frame =
                     |decoder: &mut ffmpeg::decoder::Video,
-                     video_producer_queue: &Arc<BlockingDelayQueue<DelayItem<Video>>>|
+                     video_producer_queue: &Arc<BlockingDelayQueue<DelayItem<Video>>>,
+                     presentation_time: &mut Instant|
                      -> Result<bool, ffmpeg::Error> {
                         let mut decoded = Video::empty();
                         let status = decoder.receive_frame(&mut decoded);
@@ -84,24 +96,28 @@ fn main() -> Result<(), ffmpeg::Error> {
                             Ok(()) => {
                                 let mut rgb_frame = Video::empty();
                                 scaler.run(&decoded, &mut rgb_frame)?;
-                                rgb_frame.set_pts(decoded.pts());
+                                rgb_frame.set_pts(decoded.timestamp());
 
-                                let deocded_pts = decoded.pts().unwrap();
-                                // Get the time base of the stream
-                                let time_base = decoder.time_base();
-                                let time_base =
-                                    time_base.numerator() as f64 / time_base.denominator() as f64;
-                                // Calculate duration in seconds.
-                                let frame_duration = (deocded_pts - last_pts) as f64 * time_base;
-                                // Convert to ms:
-                                // let frame_duration = (frame_duration * 1000_f64) as u64;
-                                let frame_duration = frame_duration as u64;
+                                let deocded_timestamp = decoded.timestamp().unwrap_or(0);
+                                let frame_time = deocded_timestamp.rescale_with(
+                                    video_stream_tb,
+                                    Rational(1, 1000),
+                                    Rounding::Zero,
+                                ) as u64;
 
-                                last_pts = deocded_pts;
-                                video_producer_queue.add(DelayItem::new(
-                                    rgb_frame,
-                                    Instant::now() + Duration::from_millis(frame_duration),
-                                ));
+                                println!(
+                                    "Queue frame with pts {} and timestamp {}",
+                                    deocded_timestamp, frame_time,
+                                );
+
+                                let frame_diff = frame_time - last_frame_time;
+
+                                last_frame_time = frame_time;
+
+                                *presentation_time =
+                                    *presentation_time + Duration::from_millis(frame_diff);
+                                video_producer_queue
+                                    .add(DelayItem::new(rgb_frame, *presentation_time));
                                 Ok(false)
                             }
                         }
@@ -117,8 +133,11 @@ fn main() -> Result<(), ffmpeg::Error> {
                         decoder.send_eof()?;
                     }
 
-                    let is_eof =
-                        receive_and_process_decoded_frame(&mut decoder, &video_producer_queue)?;
+                    let is_eof = receive_and_process_decoded_frame(
+                        &mut decoder,
+                        &video_producer_queue,
+                        &mut presentation_time,
+                    )?;
                     if is_eof {
                         break 'decoding;
                     }
@@ -156,7 +175,7 @@ fn main() -> Result<(), ffmpeg::Error> {
                 .map_err(|e| e.to_string())
                 .unwrap();
 
-            let pts = rgb_frame.pts().unwrap();
+            let pts = rgb_frame.timestamp().unwrap_or(0);
             println!("write to texture {pts}");
             texture
                 .with_lock(None, |buffer: &mut [u8], _pitch: usize| {
