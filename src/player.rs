@@ -4,12 +4,12 @@ extern crate ffmpeg_next;
 use blocking_delay_queue::{BlockingDelayQueue, DelayItem};
 pub use error_stack::{IntoReport, Report, Result, ResultExt};
 use ffmpeg_next::{
-    format::{input, Input, Pixel},
+    format::{input, Pixel},
     mathematics::Rounding,
     media::Type,
     software::scaling::{context::Context, flag::Flags},
     util::frame::video::Video,
-    Packet, Stream, {Rational, Rescale},
+    Packet, {Rational, Rescale},
 };
 use std::{
     path::Path,
@@ -30,6 +30,55 @@ pub struct Player {
     video_queue: Arc<BlockingDelayQueue<DelayItem<Video>>>,
     running: Option<Arc<bool>>,
     threads: Vec<JoinHandle<Result<(), PlayerError>>>,
+}
+
+struct DemuxerData {
+    stream: ffmpeg_next::format::context::Input,
+    stream_index: usize,
+    packet_queue: Arc<BlockingDelayQueue<DelayItem<Packet>>>,
+    running: Weak<bool>,
+}
+
+struct DecoderData {
+    decoder: ffmpeg_next::decoder::Video,
+    time_base: Rational,
+    packet_queue: Arc<BlockingDelayQueue<DelayItem<Packet>>>,
+    video_queue: Arc<BlockingDelayQueue<DelayItem<Video>>>,
+    running: Weak<bool>,
+}
+
+impl DemuxerData {
+    pub fn new(
+        stream: ffmpeg_next::format::context::Input,
+        stream_index: usize,
+        packet_queue: Arc<BlockingDelayQueue<DelayItem<Packet>>>,
+        running: Weak<bool>,
+    ) -> Self {
+        Self {
+            stream,
+            stream_index,
+            packet_queue,
+            running,
+        }
+    }
+}
+
+impl DecoderData {
+    pub fn new(
+        decoder: ffmpeg_next::decoder::Video,
+        time_base: Rational,
+        packet_queue: Arc<BlockingDelayQueue<DelayItem<Packet>>>,
+        video_queue: Arc<BlockingDelayQueue<DelayItem<Video>>>,
+        running: Weak<bool>,
+    ) -> Self {
+        Self {
+            decoder,
+            time_base,
+            packet_queue,
+            video_queue,
+            running,
+        }
+    }
 }
 
 impl Player {
@@ -56,7 +105,7 @@ impl Player {
         ffmpeg_next::init().map_err(to_player_error)?;
         self.uri = uri.to_owned();
         //let path = Path::new(&self.uri);
-        let mut input = input(&Path::new(&self.uri)).map_err(to_player_error)?;
+        let input = input(&Path::new(&self.uri)).map_err(to_player_error)?;
 
         let video_stream_input = input
             .streams()
@@ -69,34 +118,78 @@ impl Player {
         let context_decoder =
             ffmpeg_next::codec::context::Context::from_parameters(video_stream_input.parameters())
                 .map_err(to_player_error)?;
-        let mut decoder = context_decoder.decoder().video().map_err(to_player_error)?;
+        let decoder = context_decoder.decoder().video().map_err(to_player_error)?;
+
+        let running = Arc::new(true);
+
+        let packet_queue = self.packet_queue.clone();
+        let demuxer_data = DemuxerData::new(
+            input,
+            video_stream_index,
+            packet_queue,
+            Arc::downgrade(&running),
+        );
 
         self.width = decoder.width();
         self.height = decoder.height();
 
-        let mut sent_eof = false;
-        let mut last_frame_time: u64 = 0;
-
-        let running = Arc::new(true);
-
-        let weak_running = Arc::downgrade(&running);
+        let video_producer_queue = self.video_queue.clone();
+        let decoder_data = DecoderData::new(
+            decoder,
+            video_stream_tb,
+            demuxer_data.packet_queue.clone(),
+            video_producer_queue,
+            Arc::downgrade(&running),
+        );
 
         self.running.replace(running);
 
-        let video_producer_queue = self.video_queue.clone();
-        self.threads
-            .push(thread::spawn(move || -> Result<(), PlayerError> {
+        self.threads.push(thread::spawn({
+            let mut demuxer_data = demuxer_data;
+            move || -> Result<(), PlayerError> {
+                let mut sent_eof = false;
+
+                'demuxing: loop {
+                    if let Some((stream, packet)) = demuxer_data.stream.packets().next() {
+                        if stream.index() == demuxer_data.stream_index {
+                            sent_eof = false;
+                            demuxer_data
+                                .packet_queue
+                                .add(DelayItem::new(packet, Instant::now()));
+                        }
+                    } else if !sent_eof {
+                        sent_eof = true;
+                        let packet = Packet::new(0);
+                        demuxer_data
+                            .packet_queue
+                            .add(DelayItem::new(packet, Instant::now()));
+                    }
+
+                    if demuxer_data.running.upgrade().is_none() {
+                        break 'demuxing;
+                    }
+                }
+
+                println!("################### return from demuxer spawn");
+                Ok(())
+            }
+        }));
+
+        self.threads.push(thread::spawn({
+            let mut decoder_data = decoder_data;
+            move || -> Result<(), PlayerError> {
                 let mut scaler = Context::get(
-                    decoder.format(),
-                    decoder.width(),
-                    decoder.height(),
+                    decoder_data.decoder.format(),
+                    decoder_data.decoder.width(),
+                    decoder_data.decoder.height(),
                     Pixel::RGB24,
-                    decoder.width(),
-                    decoder.height(),
+                    decoder_data.decoder.width(),
+                    decoder_data.decoder.height(),
                     Flags::BILINEAR,
                 )
                 .map_err(to_player_error)?;
 
+                let mut last_frame_time: u64 = 0;
                 let mut presentation_time = Instant::now();
 
                 let mut receive_and_process_decoded_frame =
@@ -109,7 +202,8 @@ impl Player {
                         match status {
                             Err(err) => match err {
                                 ffmpeg_next::Error::Eof => {
-                                    video_producer_queue
+                                    decoder_data
+                                        .video_queue
                                         .add(DelayItem::new(Video::empty(), Instant::now()));
                                     Ok(true)
                                 }
@@ -130,7 +224,7 @@ impl Player {
 
                                 let deocded_timestamp = decoded.timestamp().unwrap_or(0);
                                 let frame_time = deocded_timestamp.rescale_with(
-                                    video_stream_tb,
+                                    decoder_data.time_base,
                                     Rational(1, 1000),
                                     Rounding::Zero,
                                 ) as u64;
@@ -144,34 +238,35 @@ impl Player {
 
                                 last_frame_time = frame_time;
 
-                                *presentation_time =
-                                    *presentation_time + Duration::from_millis(frame_diff);
+                                *presentation_time += Duration::from_millis(frame_diff);
                                 println!("add to video queue");
                                 video_producer_queue
                                     .add(DelayItem::new(rgb_frame, *presentation_time));
                                 println!(
                                     "got back from adding to video queue running={}",
-                                    weak_running.upgrade().is_none()
+                                    decoder_data.running.upgrade().is_none()
                                 );
-                                Ok(weak_running.upgrade().is_none())
+                                Ok(decoder_data.running.upgrade().is_none())
                             }
                         }
                     };
 
                 'decoding: loop {
-                    if let Some((stream, packet)) = input.packets().next() {
-                        if stream.index() == video_stream_index {
-                            sent_eof = false;
-                            decoder.send_packet(&packet).map_err(to_player_error)?;
-                        }
-                    } else if !sent_eof {
-                        sent_eof = true;
-                        decoder.send_eof().map_err(to_player_error)?;
+                    let packet_delay_item = decoder_data.packet_queue.take();
+                    let packet = packet_delay_item.data;
+
+                    if packet.size() != 0 {
+                        decoder_data
+                            .decoder
+                            .send_packet(&packet)
+                            .map_err(to_player_error)?;
+                    } else {
+                        decoder_data.decoder.send_eof().map_err(to_player_error)?;
                     }
 
                     let is_eof = receive_and_process_decoded_frame(
-                        &mut decoder,
-                        &video_producer_queue,
+                        &mut decoder_data.decoder,
+                        &decoder_data.video_queue,
                         &mut presentation_time,
                     )?;
                     println!("received frame is_eof={}", is_eof);
@@ -179,9 +274,10 @@ impl Player {
                         break 'decoding;
                     }
                 }
-                println!("################### return from spawn");
+                println!("################### return from decoder spawn");
                 Ok(())
-            }));
+            }
+        }));
 
         Ok(())
     }
@@ -189,6 +285,7 @@ impl Player {
     pub fn stop(&mut self) -> Result<(), PlayerError> {
         println!("Player::stop()");
         self.running.take();
+        self.packet_queue.clear();
         self.video_queue.clear();
         while let Some(t) = self.threads.pop() {
             if let Err(err) = t.join() {
