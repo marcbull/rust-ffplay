@@ -11,9 +11,9 @@ pub enum PlayerError {
 impl fmt::Display for PlayerError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PlayerError::FfmpegError(ffmpeg_err) => match ffmpeg_err {
-                _ => fmt.write_fmt(format_args!("PlayerError: {}", ffmpeg_err)),
-            },
+            PlayerError::FfmpegError(ffmpeg_err) => {
+                fmt.write_fmt(format_args!("PlayerError: {}", ffmpeg_err))
+            }
         }
     }
 }
