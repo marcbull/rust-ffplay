@@ -19,7 +19,3 @@ impl fmt::Display for PlayerError {
 }
 
 impl std::error::Error for PlayerError {}
-
-pub fn to_player_error(err: ffmpeg::util::error::Error) -> PlayerError {
-    PlayerError::FfmpegError(err)
-}

@@ -15,6 +15,8 @@ use std::{env, fmt, io::prelude::*};
 #[derive(Debug)]
 pub enum FFplayError {
     PlayerError(error_stack::Report<PlayerError>),
+    SDL2InitError(String),
+    VideoSubSystemError(String),
     TextureValueError(TextureValueError),
 }
 
@@ -22,10 +24,16 @@ impl fmt::Display for FFplayError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FFplayError::PlayerError(player_err) => {
-                fmt.write_fmt(format_args!("FFplayError: {}", player_err))
+                fmt.write_fmt(format_args!("FFplayError player error: {}", player_err))
+            }
+            FFplayError::SDL2InitError(err) => {
+                fmt.write_fmt(format_args!("FFplayError SDL2 init error: {}", err))
+            }
+            FFplayError::VideoSubSystemError(err) => {
+                fmt.write_fmt(format_args!("FFplayError video subsystem error: {}", err))
             }
             FFplayError::TextureValueError(tex_err) => {
-                fmt.write_fmt(format_args!("FFplayError: {}", tex_err))
+                fmt.write_fmt(format_args!("FFplayError texture value error: {}", tex_err))
             }
         }
     }
@@ -33,18 +41,14 @@ impl fmt::Display for FFplayError {
 
 impl std::error::Error for FFplayError {}
 
-pub fn to_ffplay_error(err: error_stack::Report<PlayerError>) -> FFplayError {
-    FFplayError::PlayerError(err)
-}
-
 fn main() -> Result<(), FFplayError> {
-    let sdl_context = sdl2::init().unwrap();
+    let sdl_context = sdl2::init().map_err(FFplayError::SDL2InitError)?;
     let video_subsystem = sdl_context.video().unwrap();
 
     let mut player = player::Player::new();
     player
         .start(&env::args().nth(1).expect("Cannot open file."))
-        .map_err(to_ffplay_error)?;
+        .map_err(FFplayError::PlayerError)?;
 
     println!("create window with {}x{}", player.width(), player.height());
     let window = video_subsystem
@@ -103,7 +107,7 @@ fn main() -> Result<(), FFplayError> {
         canvas.present();
     }
 
-    player.stop().map_err(to_ffplay_error)?;
+    player.stop().map_err(FFplayError::PlayerError)?;
 
     Ok(())
 }
