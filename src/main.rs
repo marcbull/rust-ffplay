@@ -3,19 +3,48 @@ extern crate sdl2;
 mod player;
 
 use error_stack::Result;
+use player::PlayerError;
 use sdl2::{
     event::Event,
     keyboard::Keycode,
     pixels::{Color, PixelFormatEnum},
+    render::TextureValueError,
 };
-use std::{env, io::prelude::*};
+use std::{env, fmt, io::prelude::*};
 
-fn main() -> Result<(), player::PlayerError> {
+#[derive(Debug)]
+pub enum FFplayError {
+    PlayerError(error_stack::Report<PlayerError>),
+    TextureValueError(TextureValueError),
+}
+
+impl fmt::Display for FFplayError {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FFplayError::PlayerError(player_err) => {
+                fmt.write_fmt(format_args!("FFplayError: {}", player_err))
+            }
+            FFplayError::TextureValueError(tex_err) => {
+                fmt.write_fmt(format_args!("FFplayError: {}", tex_err))
+            }
+        }
+    }
+}
+
+impl std::error::Error for FFplayError {}
+
+pub fn to_ffplay_error(err: error_stack::Report<PlayerError>) -> FFplayError {
+    FFplayError::PlayerError(err)
+}
+
+fn main() -> Result<(), FFplayError> {
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
 
     let mut player = player::Player::new();
-    player.start(&env::args().nth(1).expect("Cannot open file."))?;
+    player
+        .start(&env::args().nth(1).expect("Cannot open file."))
+        .map_err(to_ffplay_error)?;
 
     println!("create window with {}x{}", player.width(), player.height());
     let window = video_subsystem
@@ -33,6 +62,10 @@ fn main() -> Result<(), player::PlayerError> {
     let texture_creator = canvas.texture_creator();
 
     let video_queue = player.video_queue();
+
+    let mut texture = texture_creator
+        .create_texture_streaming(PixelFormatEnum::RGB24, player.width(), player.height())
+        .map_err(FFplayError::TextureValueError)?;
 
     'running: loop {
         canvas.clear();
@@ -56,15 +89,6 @@ fn main() -> Result<(), player::PlayerError> {
 
         let rgb_frame = rgb_frame.unwrap();
 
-        let mut texture = texture_creator
-            .create_texture_streaming(
-                PixelFormatEnum::RGB24,
-                rgb_frame.width(),
-                rgb_frame.height(),
-            )
-            .map_err(|e| e.to_string())
-            .unwrap();
-
         let pts = rgb_frame.timestamp().unwrap_or(0);
         println!("write to texture {pts}");
         texture
@@ -79,7 +103,7 @@ fn main() -> Result<(), player::PlayerError> {
         canvas.present();
     }
 
-    player.stop()?;
+    player.stop().map_err(to_ffplay_error)?;
 
     Ok(())
 }
