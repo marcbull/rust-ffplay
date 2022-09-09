@@ -50,9 +50,11 @@ fn main() -> Result<(), player::PlayerError> {
         let rgb_frame_delay_item = video_queue.take();
         let rgb_frame = rgb_frame_delay_item.data;
 
-        if unsafe { rgb_frame.is_empty() } {
+        if rgb_frame.is_none() {
             break 'running;
         }
+
+        let rgb_frame = rgb_frame.unwrap();
 
         let mut texture = texture_creator
             .create_texture_streaming(

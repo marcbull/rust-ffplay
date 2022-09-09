@@ -22,12 +22,15 @@ pub use error::PlayerError;
 
 use self::error::to_player_error;
 
+type PacketQueue = Arc<BlockingDelayQueue<DelayItem<Option<Packet>>>>;
+pub type VideoQueue = Arc<BlockingDelayQueue<DelayItem<Option<Video>>>>;
+
 pub struct Player {
     uri: String,
     width: u32,
     height: u32,
-    packet_queue: Arc<BlockingDelayQueue<DelayItem<Packet>>>,
-    video_queue: Arc<BlockingDelayQueue<DelayItem<Video>>>,
+    packet_queue: PacketQueue,
+    video_queue: VideoQueue,
     running: Option<Arc<bool>>,
     threads: Vec<JoinHandle<Result<(), PlayerError>>>,
 }
@@ -35,15 +38,15 @@ pub struct Player {
 struct DemuxerData {
     stream: ffmpeg_next::format::context::Input,
     stream_index: usize,
-    packet_queue: Arc<BlockingDelayQueue<DelayItem<Packet>>>,
+    packet_queue: PacketQueue,
     running: Weak<bool>,
 }
 
 struct DecoderData {
     decoder: ffmpeg_next::decoder::Video,
     time_base: Rational,
-    packet_queue: Arc<BlockingDelayQueue<DelayItem<Packet>>>,
-    video_queue: Arc<BlockingDelayQueue<DelayItem<Video>>>,
+    packet_queue: PacketQueue,
+    video_queue: VideoQueue,
     running: Weak<bool>,
 }
 
@@ -51,7 +54,7 @@ impl DemuxerData {
     pub fn new(
         stream: ffmpeg_next::format::context::Input,
         stream_index: usize,
-        packet_queue: Arc<BlockingDelayQueue<DelayItem<Packet>>>,
+        packet_queue: PacketQueue,
         running: Weak<bool>,
     ) -> Self {
         Self {
@@ -67,8 +70,8 @@ impl DecoderData {
     pub fn new(
         decoder: ffmpeg_next::decoder::Video,
         time_base: Rational,
-        packet_queue: Arc<BlockingDelayQueue<DelayItem<Packet>>>,
-        video_queue: Arc<BlockingDelayQueue<DelayItem<Video>>>,
+        packet_queue: PacketQueue,
+        video_queue: VideoQueue,
         running: Weak<bool>,
     ) -> Self {
         Self {
@@ -155,14 +158,14 @@ impl Player {
                             sent_eof = false;
                             demuxer_data
                                 .packet_queue
-                                .add(DelayItem::new(packet, Instant::now()));
+                                .add(DelayItem::new(Some(packet), Instant::now()));
                         }
                     } else if !sent_eof {
                         sent_eof = true;
                         let packet = Packet::new(0);
                         demuxer_data
                             .packet_queue
-                            .add(DelayItem::new(packet, Instant::now()));
+                            .add(DelayItem::new(None, Instant::now()));
                     }
 
                     if demuxer_data.running.upgrade().is_none() {
@@ -194,7 +197,7 @@ impl Player {
 
                 let mut receive_and_process_decoded_frame =
                     |decoder: &mut ffmpeg_next::decoder::Video,
-                     video_producer_queue: &Arc<BlockingDelayQueue<DelayItem<Video>>>,
+                     video_producer_queue: &VideoQueue,
                      presentation_time: &mut Instant|
                      -> Result<bool, PlayerError> {
                         let mut decoded = Video::empty();
@@ -204,7 +207,7 @@ impl Player {
                                 ffmpeg_next::Error::Eof => {
                                     decoder_data
                                         .video_queue
-                                        .add(DelayItem::new(Video::empty(), Instant::now()));
+                                        .add(DelayItem::new(None, Instant::now()));
                                     Ok(true)
                                 }
                                 ffmpeg_next::Error::Other { errno } => match errno {
@@ -241,7 +244,7 @@ impl Player {
                                 *presentation_time += Duration::from_millis(frame_diff);
                                 println!("add to video queue");
                                 video_producer_queue
-                                    .add(DelayItem::new(rgb_frame, *presentation_time));
+                                    .add(DelayItem::new(Some(rgb_frame), *presentation_time));
                                 println!(
                                     "got back from adding to video queue running={}",
                                     decoder_data.running.upgrade().is_none()
@@ -255,7 +258,8 @@ impl Player {
                     let packet_delay_item = decoder_data.packet_queue.take();
                     let packet = packet_delay_item.data;
 
-                    if packet.size() != 0 {
+                    if packet.is_some() {
+                        let packet = packet.unwrap();
                         decoder_data
                             .decoder
                             .send_packet(&packet)
@@ -303,7 +307,7 @@ impl Player {
         self.height
     }
 
-    pub fn video_queue(&self) -> Arc<BlockingDelayQueue<DelayItem<Video>>> {
+    pub fn video_queue(&self) -> VideoQueue {
         self.video_queue.clone()
     }
 }
