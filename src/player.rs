@@ -150,22 +150,18 @@ impl Player {
         self.threads.push(thread::spawn({
             let mut demuxer_data = demuxer_data;
             move || -> Result<(), PlayerError> {
-                let mut sent_eof = false;
-
                 'demuxing: loop {
                     if let Some((stream, packet)) = demuxer_data.stream.packets().next() {
                         if stream.index() == demuxer_data.stream_index {
-                            sent_eof = false;
                             demuxer_data
                                 .packet_queue
                                 .add(DelayItem::new(Some(packet), Instant::now()));
                         }
-                    } else if !sent_eof {
-                        sent_eof = true;
-                        let packet = Packet::new(0);
+                    } else {
                         demuxer_data
                             .packet_queue
                             .add(DelayItem::new(None, Instant::now()));
+                        break 'demuxing;
                     }
 
                     if demuxer_data.running.upgrade().is_none() {
@@ -192,6 +188,7 @@ impl Player {
                 )
                 .map_err(to_player_error)?;
 
+                let mut sent_eof = false;
                 let mut last_frame_time: u64 = 0;
                 let mut presentation_time = Instant::now();
 
@@ -205,6 +202,7 @@ impl Player {
                         match status {
                             Err(err) => match err {
                                 ffmpeg_next::Error::Eof => {
+                                    println!("Decoder returned EOF, send EOF frame");
                                     decoder_data
                                         .video_queue
                                         .add(DelayItem::new(None, Instant::now()));
@@ -255,17 +253,21 @@ impl Player {
                     };
 
                 'decoding: loop {
-                    let packet_delay_item = decoder_data.packet_queue.take();
-                    let packet = packet_delay_item.data;
+                    if !sent_eof {
+                        let packet_delay_item = decoder_data.packet_queue.take();
+                        let packet = packet_delay_item.data;
 
-                    if packet.is_some() {
-                        let packet = packet.unwrap();
-                        decoder_data
-                            .decoder
-                            .send_packet(&packet)
-                            .map_err(to_player_error)?;
-                    } else {
-                        decoder_data.decoder.send_eof().map_err(to_player_error)?;
+                        if packet.is_some() {
+                            let packet = packet.unwrap();
+                            decoder_data
+                                .decoder
+                                .send_packet(&packet)
+                                .map_err(to_player_error)?;
+                        } else {
+                            println!("Send EOF to decoder");
+                            sent_eof = true;
+                            decoder_data.decoder.send_eof().map_err(to_player_error)?;
+                        }
                     }
 
                     let is_eof = receive_and_process_decoded_frame(
