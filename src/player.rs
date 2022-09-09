@@ -257,8 +257,7 @@ impl Player {
                         let packet_delay_item = decoder_data.packet_queue.take();
                         let packet = packet_delay_item.data;
 
-                        if packet.is_some() {
-                            let packet = packet.unwrap();
+                        if let Some(packet) = packet {
                             decoder_data
                                 .decoder
                                 .send_packet(&packet)
