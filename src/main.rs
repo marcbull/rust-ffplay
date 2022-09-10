@@ -3,12 +3,14 @@ extern crate sdl2;
 mod player;
 
 use error_stack::Result;
+use partial_min_max::{max, min};
 use player::PlayerError;
 use sdl2::{
-    event::Event,
+    event::{Event, WindowEvent},
     keyboard::Keycode,
     pixels::{Color, PixelFormatEnum},
     render::TextureValueError,
+    render::WindowCanvas,
 };
 use std::{env, fmt, io::prelude::*};
 
@@ -50,10 +52,19 @@ fn main() -> Result<(), FFplayError> {
         .start(&env::args().nth(1).expect("Cannot open file."))
         .map_err(FFplayError::PlayerError)?;
 
-    println!("create window with {}x{}", player.width(), player.height());
+    let def_window_width: u32 = 800;
+    let def_window_height: u32 = 1200;
+
+    println!(
+        "create window with {}x{}",
+        def_window_width, def_window_height
+    );
     let window = video_subsystem
-        .window("ffplay", player.width(), player.height())
+        .window("ffplay", def_window_width, def_window_height)
+        .resizable()
         .position_centered()
+        .maximized()
+        .allow_highdpi()
         .build()
         .unwrap();
 
@@ -71,6 +82,33 @@ fn main() -> Result<(), FFplayError> {
         .create_texture_streaming(PixelFormatEnum::RGB24, player.width(), player.height())
         .map_err(FFplayError::TextureValueError)?;
 
+    let handle_window_resize = |canvas: &mut WindowCanvas, video_size: (u32, u32)| {
+        let new_window_size = canvas.window().drawable_size();
+        let ratio: f64 = min(
+            new_window_size.0 as f64 / video_size.0 as f64,
+            new_window_size.1 as f64 / video_size.1 as f64,
+        );
+        let new_w = video_size.0 as f64 * ratio;
+        let new_h = video_size.1 as f64 * ratio;
+
+        let new_w_i32 = new_w as i32;
+        let new_h_i32 = new_h as i32;
+        let new_w_w_i32 = new_window_size.0 as i32;
+        let new_w_h_i32 = new_window_size.1 as i32;
+        let x = max(
+            (max(new_w_i32, new_w_w_i32) - min(new_w_i32, new_w_w_i32)) / 2,
+            0_i32,
+        );
+        let y = max(
+            (max(new_h_i32, new_w_h_i32) - min(new_h_i32, new_w_h_i32)) / 2,
+            0_i32,
+        );
+
+        canvas.set_viewport(sdl2::rect::Rect::new(x, y, new_w as u32, new_h as u32));
+    };
+
+    handle_window_resize(&mut canvas, (player.width(), player.height()));
+
     'running: loop {
         canvas.clear();
         for event in event_pump.poll_iter() {
@@ -80,6 +118,13 @@ fn main() -> Result<(), FFplayError> {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
+                Event::Window {
+                    timestamp: _,
+                    window_id: _,
+                    win_event: WindowEvent::Resized(_, _),
+                } => {
+                    handle_window_resize(&mut canvas, (player.width(), player.height()));
+                }
                 _ => {}
             }
         }
@@ -93,8 +138,6 @@ fn main() -> Result<(), FFplayError> {
 
         let rgb_frame = rgb_frame.unwrap();
 
-        let pts = rgb_frame.timestamp().unwrap_or(0);
-        println!("write to texture {pts}");
         texture
             .with_lock(None, |buffer: &mut [u8], _pitch: usize| {
                 assert!(rgb_frame.planes() == 1);
