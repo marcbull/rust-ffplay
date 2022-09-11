@@ -15,18 +15,19 @@ use std::{
     path::Path,
     sync::{Arc, Weak},
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 pub use error::PlayerError;
 
 type PacketQueue = Arc<BlockingDelayQueue<DelayItem<Option<Packet>>>>;
-pub type VideoQueue = Arc<BlockingDelayQueue<DelayItem<Option<Video>>>>;
+pub type VideoQueue = Arc<BlockingDelayQueue<DelayItem<Option<VideoData>>>>;
 
 pub struct Player {
     uri: String,
     width: u32,
     height: u32,
+    paused: bool,
     packet_queue: PacketQueue,
     video_queue: VideoQueue,
     running: Option<Arc<bool>>,
@@ -48,8 +49,14 @@ struct DecoderData {
     running: Weak<bool>,
 }
 
+pub struct VideoData {
+    pub frame_time: u64,
+    pub diff_to_prev_frame: u64,
+    pub video_frame: Video,
+}
+
 impl DemuxerData {
-    pub fn new(
+    fn new(
         stream: ffmpeg_next::format::context::Input,
         stream_index: usize,
         packet_queue: PacketQueue,
@@ -65,7 +72,7 @@ impl DemuxerData {
 }
 
 impl DecoderData {
-    pub fn new(
+    fn new(
         decoder: ffmpeg_next::decoder::Video,
         time_base: Rational,
         packet_queue: PacketQueue,
@@ -82,15 +89,26 @@ impl DecoderData {
     }
 }
 
+impl VideoData {
+    fn new(frame_time: u64, diff_to_prev_frame: u64, video_frame: Video) -> Self {
+        Self {
+            frame_time,
+            diff_to_prev_frame,
+            video_frame,
+        }
+    }
+}
+
 impl Player {
     const PACKET_QUEUE_SIZE: usize = 60;
-    const FRAME_QUEUE_SIZE: usize = 60;
+    const FRAME_QUEUE_SIZE: usize = 3;
 
     pub fn new() -> Self {
         Self {
             uri: "".to_owned(),
             width: 0,
             height: 0,
+            paused: false,
             packet_queue: Arc::new(BlockingDelayQueue::new_with_capacity(
                 Player::PACKET_QUEUE_SIZE,
             )),
@@ -191,12 +209,10 @@ impl Player {
 
                 let mut sent_eof = false;
                 let mut last_frame_time: u64 = 0;
-                let mut presentation_time = Instant::now();
 
                 let mut receive_and_process_decoded_frame =
                     |decoder: &mut ffmpeg_next::decoder::Video,
-                     video_producer_queue: &VideoQueue,
-                     presentation_time: &mut Instant|
+                     video_producer_queue: &VideoQueue|
                      -> Result<bool, PlayerError> {
                         let mut decoded = Video::empty();
                         let status = decoder.receive_frame(&mut decoded);
@@ -231,23 +247,24 @@ impl Player {
                                     Rounding::Zero,
                                 ) as u64;
 
-                                println!(
-                                    "Queue frame with pts {} and timestamp {}",
-                                    deocded_timestamp, frame_time,
-                                );
+                                // println!(
+                                //     "Queue frame with pts {} and timestamp {}",
+                                //     deocded_timestamp, frame_time,
+                                // );
 
                                 let frame_diff = frame_time - last_frame_time;
 
                                 last_frame_time = frame_time;
 
-                                *presentation_time += Duration::from_millis(frame_diff);
-                                println!("add to video queue");
-                                video_producer_queue
-                                    .add(DelayItem::new(Some(rgb_frame), *presentation_time));
-                                println!(
-                                    "got back from adding to video queue running={}",
-                                    decoder_data.running.upgrade().is_none()
-                                );
+                                // println!("add to video queue");
+                                video_producer_queue.add(DelayItem::new(
+                                    Some(VideoData::new(frame_time, frame_diff, rgb_frame)),
+                                    Instant::now(),
+                                ));
+                                // println!(
+                                //     "got back from adding to video queue running={}",
+                                //     decoder_data.running.upgrade().is_none()
+                                // );
                                 Ok(decoder_data.running.upgrade().is_none())
                             }
                         }
@@ -276,9 +293,8 @@ impl Player {
                     let is_eof = receive_and_process_decoded_frame(
                         &mut decoder_data.decoder,
                         &decoder_data.video_queue,
-                        &mut presentation_time,
                     )?;
-                    println!("received frame is_eof={}", is_eof);
+                    // println!("received frame is_eof={}", is_eof);
                     if is_eof {
                         break 'decoding;
                     }
@@ -310,6 +326,11 @@ impl Player {
 
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+        if !self.paused {}
     }
 
     pub fn video_queue(&self) -> VideoQueue {

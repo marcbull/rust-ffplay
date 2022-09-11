@@ -12,7 +12,14 @@ use sdl2::{
     render::TextureValueError,
     render::WindowCanvas,
 };
-use std::{env, fmt, io::prelude::*};
+use std::{
+    env, fmt,
+    io::prelude::*,
+    thread,
+    time::{Duration, Instant},
+};
+
+use crate::player::VideoData;
 
 #[derive(Debug)]
 pub enum FFplayError {
@@ -109,45 +116,101 @@ fn main() -> Result<(), FFplayError> {
 
     handle_window_resize(&mut canvas, (player.width(), player.height()));
 
+    let mut paused = false;
+    let mut presentation_time = Instant::now();
+    let mut video_data_item: Option<VideoData> = None;
     'running: loop {
         canvas.clear();
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. }
-                | Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => break 'running,
-                Event::Window {
-                    timestamp: _,
-                    window_id: _,
-                    win_event: WindowEvent::Resized(_, _),
-                } => {
-                    handle_window_resize(&mut canvas, (player.width(), player.height()));
+        if paused {
+            for event in event_pump.wait_iter() {
+                match event {
+                    Event::Quit { .. }
+                    | Event::KeyDown {
+                        keycode: Some(Keycode::Escape),
+                        ..
+                    } => break 'running,
+                    Event::KeyDown {
+                        keycode: Some(Keycode::Space),
+                        ..
+                    } => {
+                        if paused {
+                            presentation_time = Instant::now();
+                        }
+                        paused = !paused;
+                        player.set_paused(paused);
+                        println!("space pressed paused={}", paused);
+                        continue 'running;
+                    }
+                    Event::Window {
+                        timestamp: _,
+                        window_id: _,
+                        win_event: WindowEvent::Resized(_, _),
+                    } => {
+                        handle_window_resize(&mut canvas, (player.width(), player.height()));
+                    }
+                    _ => {}
                 }
-                _ => {}
+            }
+        } else {
+            for event in event_pump.poll_iter() {
+                match event {
+                    Event::Quit { .. }
+                    | Event::KeyDown {
+                        keycode: Some(Keycode::Escape),
+                        ..
+                    } => break 'running,
+                    Event::KeyDown {
+                        keycode: Some(Keycode::Space),
+                        ..
+                    } => {
+                        if paused {}
+                        paused = !paused;
+                        println!("space pressed paused={}", paused);
+                    }
+                    Event::Window {
+                        timestamp: _,
+                        window_id: _,
+                        win_event: WindowEvent::Resized(_, _),
+                    } => {
+                        handle_window_resize(&mut canvas, (player.width(), player.height()));
+                    }
+                    _ => {}
+                }
             }
         }
 
-        let rgb_frame_delay_item = video_queue.take();
-        let rgb_frame = rgb_frame_delay_item.data;
-
-        if rgb_frame.is_none() {
-            break 'running;
+        if paused {
+            continue 'running;
         }
 
-        let rgb_frame = rgb_frame.unwrap();
+        if video_data_item.is_none() {
+            video_data_item = video_queue.take().data;
+            if video_data_item.is_none() {
+                break 'running;
+            }
+        }
+
+        let video_data = video_data_item.unwrap();
+
+        let now = Instant::now();
+        let frame_time = Duration::from_millis(video_data.diff_to_prev_frame);
+        if presentation_time + frame_time > now {
+            thread::sleep(presentation_time + frame_time - now);
+        }
+        presentation_time += frame_time;
 
         texture
             .with_lock(None, |buffer: &mut [u8], _pitch: usize| {
-                assert!(rgb_frame.planes() == 1);
-                rgb_frame.data(0).read_exact(buffer).unwrap();
+                assert!(video_data.video_frame.planes() == 1);
+                video_data.video_frame.data(0).read_exact(buffer).unwrap();
             })
             .unwrap();
 
         canvas.copy(&texture, None, None).unwrap();
 
         canvas.present();
+
+        video_data_item = None;
     }
 
     player.stop().map_err(FFplayError::PlayerError)?;

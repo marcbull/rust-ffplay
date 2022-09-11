@@ -11,4 +11,5 @@ blocking-delay-queue = { path = "./blocking-delay-queue" }
 ffmpeg-next = "5.1.1"
 error-stack = "0.1.1"
 # crates only used in main
+partial-min-max = "0.4.0"
 sdl2 = "0.35.2"
