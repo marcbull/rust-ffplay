@@ -18,12 +18,12 @@ use std::{
     time::Instant,
 };
 
-pub use error::PlayerError;
+pub use error::FileDecoderError;
 
 type PacketQueue = Arc<BlockingDelayQueue<DelayItem<Option<Packet>>>>;
 pub type VideoQueue = Arc<BlockingDelayQueue<DelayItem<Option<VideoData>>>>;
 
-pub struct Player {
+pub struct FileDecoder {
     uri: String,
     width: u32,
     height: u32,
@@ -31,7 +31,7 @@ pub struct Player {
     packet_queue: PacketQueue,
     video_queue: VideoQueue,
     running: Option<Arc<bool>>,
-    threads: Vec<JoinHandle<Result<(), PlayerError>>>,
+    threads: Vec<JoinHandle<Result<(), FileDecoderError>>>,
 }
 
 struct DemuxerData {
@@ -99,7 +99,7 @@ impl VideoData {
     }
 }
 
-impl Player {
+impl FileDecoder {
     const PACKET_QUEUE_SIZE: usize = 60;
     const FRAME_QUEUE_SIZE: usize = 3;
 
@@ -110,37 +110,37 @@ impl Player {
             height: 0,
             paused: false,
             packet_queue: Arc::new(BlockingDelayQueue::new_with_capacity(
-                Player::PACKET_QUEUE_SIZE,
+                FileDecoder::PACKET_QUEUE_SIZE,
             )),
             video_queue: Arc::new(BlockingDelayQueue::new_with_capacity(
-                Player::FRAME_QUEUE_SIZE,
+                FileDecoder::FRAME_QUEUE_SIZE,
             )),
             running: None,
             threads: Vec::new(),
         }
     }
 
-    pub fn start(&mut self, uri: &String) -> Result<(), PlayerError> {
-        ffmpeg_next::init().map_err(PlayerError::FfmpegError)?;
+    pub fn start(&mut self, uri: &String) -> Result<(), FileDecoderError> {
+        ffmpeg_next::init().map_err(FileDecoderError::FfmpegError)?;
         self.uri = uri.to_owned();
         //let path = Path::new(&self.uri);
-        let input = input(&Path::new(&self.uri)).map_err(PlayerError::FfmpegError)?;
+        let input = input(&Path::new(&self.uri)).map_err(FileDecoderError::FfmpegError)?;
 
         let video_stream_input = input
             .streams()
             .best(Type::Video)
             .ok_or(ffmpeg_next::Error::StreamNotFound)
-            .map_err(PlayerError::FfmpegError)?;
+            .map_err(FileDecoderError::FfmpegError)?;
         let video_stream_index = video_stream_input.index();
         let video_stream_tb = video_stream_input.time_base();
 
         let context_decoder =
             ffmpeg_next::codec::context::Context::from_parameters(video_stream_input.parameters())
-                .map_err(PlayerError::FfmpegError)?;
+                .map_err(FileDecoderError::FfmpegError)?;
         let decoder = context_decoder
             .decoder()
             .video()
-            .map_err(PlayerError::FfmpegError)?;
+            .map_err(FileDecoderError::FfmpegError)?;
 
         let running = Arc::new(true);
 
@@ -168,7 +168,7 @@ impl Player {
 
         self.threads.push(thread::spawn({
             let mut demuxer_data = demuxer_data;
-            move || -> Result<(), PlayerError> {
+            move || -> Result<(), FileDecoderError> {
                 'demuxing: loop {
                     if let Some((stream, packet)) = demuxer_data.stream.packets().next() {
                         if stream.index() == demuxer_data.stream_index {
@@ -195,7 +195,7 @@ impl Player {
 
         self.threads.push(thread::spawn({
             let mut decoder_data = decoder_data;
-            move || -> Result<(), PlayerError> {
+            move || -> Result<(), FileDecoderError> {
                 let mut scaler = Context::get(
                     decoder_data.decoder.format(),
                     decoder_data.decoder.width(),
@@ -205,7 +205,7 @@ impl Player {
                     decoder_data.decoder.height(),
                     Flags::BILINEAR,
                 )
-                .map_err(PlayerError::FfmpegError)?;
+                .map_err(FileDecoderError::FfmpegError)?;
 
                 let mut sent_eof = false;
                 let mut last_frame_time: u64 = 0;
@@ -213,7 +213,7 @@ impl Player {
                 let mut receive_and_process_decoded_frame =
                     |decoder: &mut ffmpeg_next::decoder::Video,
                      video_producer_queue: &VideoQueue|
-                     -> Result<bool, PlayerError> {
+                     -> Result<bool, FileDecoderError> {
                         let mut decoded = Video::empty();
                         let status = decoder.receive_frame(&mut decoded);
                         match status {
@@ -227,17 +227,17 @@ impl Player {
                                 }
                                 ffmpeg_next::Error::Other { errno } => match errno {
                                     ffmpeg_next::util::error::EAGAIN => Ok(false),
-                                    _ => Err(Report::new(PlayerError::FfmpegError(
+                                    _ => Err(Report::new(FileDecoderError::FfmpegError(
                                         ffmpeg_next::Error::Other { errno },
                                     ))),
                                 },
-                                _ => Err(Report::new(PlayerError::FfmpegError(err))),
+                                _ => Err(Report::new(FileDecoderError::FfmpegError(err))),
                             },
                             Ok(()) => {
                                 let mut rgb_frame = Video::empty();
                                 scaler
                                     .run(&decoded, &mut rgb_frame)
-                                    .map_err(PlayerError::FfmpegError)?;
+                                    .map_err(FileDecoderError::FfmpegError)?;
                                 rgb_frame.set_pts(decoded.timestamp());
 
                                 let deocded_timestamp = decoded.timestamp().unwrap_or(0);
@@ -279,14 +279,14 @@ impl Player {
                             decoder_data
                                 .decoder
                                 .send_packet(&packet)
-                                .map_err(PlayerError::FfmpegError)?;
+                                .map_err(FileDecoderError::FfmpegError)?;
                         } else {
                             println!("Send EOF to decoder");
                             sent_eof = true;
                             decoder_data
                                 .decoder
                                 .send_eof()
-                                .map_err(PlayerError::FfmpegError)?;
+                                .map_err(FileDecoderError::FfmpegError)?;
                         }
                     }
 
@@ -307,14 +307,14 @@ impl Player {
         Ok(())
     }
 
-    pub fn stop(&mut self) -> Result<(), PlayerError> {
-        println!("Player::stop()");
+    pub fn stop(&mut self) -> Result<(), FileDecoderError> {
+        println!("FileDecoder::stop()");
         self.running.take();
         self.packet_queue.clear();
         self.video_queue.clear();
         while let Some(t) = self.threads.pop() {
             if let Err(err) = t.join() {
-                println!("Player: thread exited with error {:?}", err);
+                println!("FileDecoder: thread exited with error {:?}", err);
             }
         }
         Ok(())

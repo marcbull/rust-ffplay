@@ -1,10 +1,10 @@
 extern crate sdl2;
 
-mod player;
+mod file_decoder;
 
 use error_stack::Result;
+use file_decoder::FileDecoderError;
 use partial_min_max::{max, min};
-use player::PlayerError;
 use sdl2::{
     event::{Event, WindowEvent},
     keyboard::Keycode,
@@ -19,11 +19,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::player::VideoData;
+use crate::file_decoder::VideoData;
 
 #[derive(Debug)]
 pub enum FFplayError {
-    PlayerError(error_stack::Report<PlayerError>),
+    PlayerError(error_stack::Report<FileDecoderError>),
     SDL2InitError(String),
     VideoSubSystemError(String),
     TextureValueError(TextureValueError),
@@ -54,7 +54,7 @@ fn main() -> Result<(), FFplayError> {
     let sdl_context = sdl2::init().map_err(FFplayError::SDL2InitError)?;
     let video_subsystem = sdl_context.video().unwrap();
 
-    let mut player = player::Player::new();
+    let mut player = file_decoder::FileDecoder::new();
     player
         .start(&env::args().nth(1).expect("Cannot open file."))
         .map_err(FFplayError::PlayerError)?;
