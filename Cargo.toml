@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 # crates used in player (and main)
 log = "0.4.17"
+derive-new = "0.5"
 blocking-delay-queue = { path = "./blocking-delay-queue" }
 ffmpeg-next = "5.1.1"
 error-stack = "0.1.1"

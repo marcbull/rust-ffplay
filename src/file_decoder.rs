@@ -26,29 +26,52 @@ pub use error::FileDecoderError;
 type PacketQueue = Arc<BlockingDelayQueue<DelayItem<Option<PacketData>>>>;
 pub type VideoQueue = Arc<BlockingDelayQueue<DelayItem<Option<VideoData>>>>;
 
+#[derive(new)]
+#[allow(clippy::too_many_arguments)]
 pub struct FileDecoder {
+    #[new(default)]
     uri: String,
+    #[new(default)]
     width: u32,
+    #[new(default)]
     height: u32,
+    #[new(value = "false")]
     paused: bool,
+    #[new(
+        value = "Arc::new(BlockingDelayQueue::new_with_capacity(FileDecoder::PACKET_QUEUE_SIZE))"
+    )]
     packet_queue: PacketQueue,
+    #[new(
+        value = "Arc::new(BlockingDelayQueue::new_with_capacity(FileDecoder::FRAME_QUEUE_SIZE))"
+    )]
     video_queue: VideoQueue,
+    #[new(default)]
     running: Option<Arc<bool>>,
+    #[new(default)]
     seek_serial: u64,
+    #[new(default)]
     threads: Vec<JoinHandle<Result<(), FileDecoderError>>>,
     // Sender for demuxer:
+    #[new(default)]
     demuxer_seek_sender: Option<mpsc::Sender<i64>>,
+    #[new(default)]
     demuxer_serial_sender: Option<mpsc::Sender<u64>>,
+    #[new(default)]
     demuxer_pause_sender: Option<mpsc::Sender<bool>>,
     // Sender for decoder:
+    #[new(default)]
     decoder_serial_sender: Option<mpsc::Sender<u64>>,
 }
 
+#[derive(new)]
+#[allow(clippy::too_many_arguments)]
 struct DemuxerData {
     stream: ffmpeg_next::format::context::Input,
     stream_index: usize,
     time_base: Rational,
+    #[new(value = "0")]
     seek_serial: u64,
+    #[new(value = "false")]
     paused: bool,
     packet_queue: PacketQueue,
     running: Weak<bool>,
@@ -57,21 +80,25 @@ struct DemuxerData {
     pause_receiver: mpsc::Receiver<bool>,
 }
 
+#[derive(new)]
 struct DecoderData {
     decoder: ffmpeg_next::decoder::Video,
     time_base: Rational,
     packet_queue: PacketQueue,
     video_queue: VideoQueue,
     running: Weak<bool>,
+    #[new(value = "0")]
     seek_serial: u64,
     serial_receiver: mpsc::Receiver<u64>,
 }
 
+#[derive(new)]
 struct PacketData {
     serial: u64,
     packet: Packet,
 }
 
+#[derive(new)]
 pub struct VideoData {
     pub serial: u64,
     pub frame_time: u64,
@@ -79,95 +106,9 @@ pub struct VideoData {
     pub video_frame: Video,
 }
 
-impl DemuxerData {
-    fn new(
-        stream: ffmpeg_next::format::context::Input,
-        stream_index: usize,
-        time_base: Rational,
-        packet_queue: PacketQueue,
-        running: Weak<bool>,
-        seek_receiver: mpsc::Receiver<i64>,
-        serial_receiver: mpsc::Receiver<u64>,
-        pause_receiver: mpsc::Receiver<bool>,
-    ) -> Self {
-        Self {
-            stream,
-            stream_index,
-            time_base,
-            seek_serial: 0,
-            paused: false,
-            packet_queue,
-            running,
-            seek_receiver,
-            serial_receiver,
-            pause_receiver,
-        }
-    }
-}
-
-impl DecoderData {
-    fn new(
-        decoder: ffmpeg_next::decoder::Video,
-        time_base: Rational,
-        packet_queue: PacketQueue,
-        video_queue: VideoQueue,
-        running: Weak<bool>,
-        serial_receiver: mpsc::Receiver<u64>,
-    ) -> Self {
-        Self {
-            decoder,
-            time_base,
-            packet_queue,
-            video_queue,
-            running,
-            seek_serial: 0,
-            serial_receiver,
-        }
-    }
-}
-
-impl PacketData {
-    fn new(serial: u64, packet: Packet) -> Self {
-        Self { serial, packet }
-    }
-}
-
-impl VideoData {
-    fn new(serial: u64, frame_time: u64, diff_to_prev_frame: u64, video_frame: Video) -> Self {
-        Self {
-            serial,
-            frame_time,
-            diff_to_prev_frame,
-            video_frame,
-        }
-    }
-}
-
 impl FileDecoder {
     const PACKET_QUEUE_SIZE: usize = 60;
     const FRAME_QUEUE_SIZE: usize = 3;
-
-    pub fn new() -> Self {
-        Self {
-            uri: "".to_owned(),
-            width: 0,
-            height: 0,
-            paused: false,
-            packet_queue: Arc::new(BlockingDelayQueue::new_with_capacity(
-                FileDecoder::PACKET_QUEUE_SIZE,
-            )),
-            video_queue: Arc::new(BlockingDelayQueue::new_with_capacity(
-                FileDecoder::FRAME_QUEUE_SIZE,
-            )),
-            running: None,
-            seek_serial: 0,
-            threads: Vec::new(),
-            demuxer_seek_sender: None,
-            demuxer_serial_sender: None,
-            demuxer_pause_sender: None,
-            decoder_serial_sender: None,
-        }
-    }
 
     pub fn start(&mut self, uri: &String) -> Result<(), FileDecoderError> {
         ffmpeg_next::init().map_err(FileDecoderError::FfmpegError)?;

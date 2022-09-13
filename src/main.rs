@@ -1,5 +1,8 @@
 extern crate sdl2;
 
+#[macro_use]
+extern crate derive_new;
+
 mod file_decoder;
 
 use error_stack::Result;
