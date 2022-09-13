@@ -4,6 +4,7 @@ mod file_decoder;
 
 use error_stack::Result;
 use file_decoder::FileDecoderError;
+use log::{debug, info, trace};
 use partial_min_max::{max, min};
 use sdl2::{
     event::{Event, WindowEvent},
@@ -51,6 +52,7 @@ impl fmt::Display for FFplayError {
 impl std::error::Error for FFplayError {}
 
 fn main() -> Result<(), FFplayError> {
+    env_logger::init();
     let sdl_context = sdl2::init().map_err(FFplayError::SDL2InitError)?;
     let video_subsystem = sdl_context.video().unwrap();
 
@@ -59,10 +61,10 @@ fn main() -> Result<(), FFplayError> {
         .start(&env::args().nth(1).expect("Cannot open file."))
         .map_err(FFplayError::PlayerError)?;
 
-    let def_window_width: u32 = 800;
-    let def_window_height: u32 = 1200;
+    let def_window_width: u32 = 1920;
+    let def_window_height: u32 = 1080;
 
-    println!(
+    info!(
         "create window with {}x{}",
         def_window_width, def_window_height
     );
@@ -119,6 +121,9 @@ fn main() -> Result<(), FFplayError> {
     let mut paused = false;
     let mut presentation_time = Instant::now();
     let mut video_data_item: Option<VideoData> = None;
+    let mut last_pts: u64 = 0;
+    let mut seek_serial: u64 = 0;
+    let seek_secs: i64 = 10000;
     'running: loop {
         canvas.clear();
         if paused {
@@ -130,17 +135,34 @@ fn main() -> Result<(), FFplayError> {
                         ..
                     } => break 'running,
                     Event::KeyDown {
-                        keycode: Some(Keycode::Space),
+                        keycode: Some(keycode),
                         ..
-                    } => {
-                        if paused {
-                            presentation_time = Instant::now();
+                    } => match keycode {
+                        Keycode::Space => {
+                            if paused {
+                                presentation_time = Instant::now();
+                            }
+                            paused = !paused;
+                            player
+                                .set_paused(paused)
+                                .map_err(FFplayError::PlayerError)?;
+                            debug!("space pressed paused={}", paused);
+                            continue 'running;
                         }
-                        paused = !paused;
-                        player.set_paused(paused);
-                        println!("space pressed paused={}", paused);
-                        continue 'running;
-                    }
+                        Keycode::Left => {
+                            let seek_to = last_pts as i64 - seek_secs;
+                            debug!("seek to {}", seek_to);
+                            seek_serial = player.seek(seek_to);
+                            continue 'running;
+                        }
+                        Keycode::Right => {
+                            let seek_to = last_pts as i64 + seek_secs;
+                            debug!("seek to {}", seek_to);
+                            seek_serial = player.seek(seek_to);
+                            continue 'running;
+                        }
+                        _ => {}
+                    },
                     Event::Window {
                         timestamp: _,
                         window_id: _,
@@ -160,13 +182,34 @@ fn main() -> Result<(), FFplayError> {
                         ..
                     } => break 'running,
                     Event::KeyDown {
-                        keycode: Some(Keycode::Space),
+                        keycode: Some(keycode),
                         ..
-                    } => {
-                        if paused {}
-                        paused = !paused;
-                        println!("space pressed paused={}", paused);
-                    }
+                    } => match keycode {
+                        Keycode::Space => {
+                            if paused {
+                                presentation_time = Instant::now();
+                            }
+                            paused = !paused;
+                            player
+                                .set_paused(paused)
+                                .map_err(FFplayError::PlayerError)?;
+                            debug!("space pressed paused={}", paused);
+                            continue 'running;
+                        }
+                        Keycode::Left => {
+                            let seek_to = last_pts as i64 - seek_secs;
+                            debug!("seek to {}", seek_to);
+                            seek_serial = player.seek(seek_to);
+                            continue 'running;
+                        }
+                        Keycode::Right => {
+                            let seek_to = last_pts as i64 + seek_secs;
+                            debug!("seek to {}", seek_to);
+                            seek_serial = player.seek(seek_to);
+                            continue 'running;
+                        }
+                        _ => {}
+                    },
                     Event::Window {
                         timestamp: _,
                         window_id: _,
@@ -184,36 +227,51 @@ fn main() -> Result<(), FFplayError> {
         }
 
         if video_data_item.is_none() {
+            trace!("ffplay: get from video queue");
             video_data_item = video_queue.take().data;
+            trace!("ffplay: return from get in video queue");
             if video_data_item.is_none() {
+                trace!("ffplay: item is none, break running");
                 break 'running;
             }
         }
 
         let video_data = video_data_item.unwrap();
 
-        let now = Instant::now();
-        let frame_time = Duration::from_millis(video_data.diff_to_prev_frame);
-        if presentation_time + frame_time > now {
-            thread::sleep(presentation_time + frame_time - now);
+        if video_data.serial == seek_serial {
+            let now = Instant::now();
+            last_pts = video_data.frame_time;
+            let frame_time = Duration::from_millis(video_data.diff_to_prev_frame);
+            if presentation_time + frame_time > now {
+                let sleep_time = presentation_time + frame_time - now;
+                trace!("ffplay: sleep for {:?}", sleep_time);
+                thread::sleep(presentation_time + frame_time - now);
+            }
+            presentation_time += frame_time;
+
+            texture
+                .with_lock(None, |buffer: &mut [u8], _pitch: usize| {
+                    assert!(video_data.video_frame.planes() == 1);
+                    video_data.video_frame.data(0).read_exact(buffer).unwrap();
+                })
+                .unwrap();
+
+            canvas.copy(&texture, None, None).unwrap();
+
+            trace!(
+                "ffplay: present frame with pts {}",
+                video_data.video_frame.pts().unwrap_or_default()
+            );
+
+            canvas.present();
+        } else {
+            trace!("ffplay: got frame with old serial");
         }
-        presentation_time += frame_time;
-
-        texture
-            .with_lock(None, |buffer: &mut [u8], _pitch: usize| {
-                assert!(video_data.video_frame.planes() == 1);
-                video_data.video_frame.data(0).read_exact(buffer).unwrap();
-            })
-            .unwrap();
-
-        canvas.copy(&texture, None, None).unwrap();
-
-        canvas.present();
 
         video_data_item = None;
     }
 
-    player.stop().map_err(FFplayError::PlayerError)?;
+    player.stop();
 
     Ok(())
 }
