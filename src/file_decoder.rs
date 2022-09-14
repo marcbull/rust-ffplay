@@ -214,10 +214,10 @@ impl FileDecoder {
                             seek_to.rescale_with(demuxer_data.time_base, TIME_BASE, Rounding::Zero);
 
                         debug!("seek to {}", seek_to);
-                        demuxer_data
-                            .stream
-                            .seek(0, RangeFull)
-                            .map_err(FileDecoderError::FfmpegError)?;
+                        // demuxer_data
+                        //     .stream
+                        //     .seek(0, RangeFull)
+                        //     .map_err(FileDecoderError::FfmpegError)?;
                         demuxer_data
                             .stream
                             .seek(seek_to, RangeFull)
@@ -430,11 +430,6 @@ impl FileDecoder {
     }
 
     pub fn seek(&mut self, seek_to: i64) -> u64 {
-        self.demuxer_seek_sender
-            .as_ref()
-            .unwrap()
-            .send(seek_to)
-            .unwrap();
         self.seek_serial += 1;
         self.demuxer_serial_sender
             .as_ref()
@@ -445,6 +440,11 @@ impl FileDecoder {
             .as_ref()
             .unwrap()
             .send(self.seek_serial)
+            .unwrap();
+        self.demuxer_seek_sender
+            .as_ref()
+            .unwrap()
+            .send(seek_to)
             .unwrap();
         self.seek_serial
     }

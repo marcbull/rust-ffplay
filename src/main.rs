@@ -126,7 +126,7 @@ fn main() -> Result<(), FFplayError> {
     let mut video_data_item: Option<VideoData> = None;
     let mut last_pts: u64 = 0;
     let mut seek_serial: u64 = 0;
-    let seek_secs: i64 = 10000;
+    let seek_secs: i64 = 20000;
     'running: loop {
         canvas.clear();
         if paused {
@@ -154,14 +154,18 @@ fn main() -> Result<(), FFplayError> {
                         }
                         Keycode::Left => {
                             let seek_to = last_pts as i64 - seek_secs;
-                            debug!("seek to {}", seek_to);
+                            debug!("seek to {} (last_pts={})", seek_to, last_pts);
+                            last_pts = seek_to as u64;
                             seek_serial = player.seek(seek_to);
+                            debug!("seek to {} (serial {})", seek_to, seek_serial);
                             continue 'running;
                         }
                         Keycode::Right => {
                             let seek_to = last_pts as i64 + seek_secs;
-                            debug!("seek to {}", seek_to);
+                            debug!("seek to {} (last_pts={})", seek_to, last_pts);
+                            last_pts = seek_to as u64;
                             seek_serial = player.seek(seek_to);
+                            debug!("seek to {} (serial {})", seek_to, seek_serial);
                             continue 'running;
                         }
                         _ => {}
@@ -201,14 +205,18 @@ fn main() -> Result<(), FFplayError> {
                         }
                         Keycode::Left => {
                             let seek_to = last_pts as i64 - seek_secs;
-                            debug!("seek to {}", seek_to);
+                            debug!("seek to {} (last_pts={})", seek_to, last_pts);
+                            last_pts = seek_to as u64;
                             seek_serial = player.seek(seek_to);
+                            debug!("seek to {} (serial {})", seek_to, seek_serial);
                             continue 'running;
                         }
                         Keycode::Right => {
                             let seek_to = last_pts as i64 + seek_secs;
-                            debug!("seek to {}", seek_to);
+                            debug!("seek to {} (last_pts={})", seek_to, last_pts);
+                            last_pts = seek_to as u64;
                             seek_serial = player.seek(seek_to);
+                            debug!("seek to {} (serial {})", seek_to, seek_serial);
                             continue 'running;
                         }
                         _ => {}
@@ -243,6 +251,12 @@ fn main() -> Result<(), FFplayError> {
 
         if video_data.serial == seek_serial {
             let now = Instant::now();
+            trace!(
+                "change last pts from {} to {} (serial={})",
+                last_pts,
+                video_data.frame_time,
+                seek_serial
+            );
             last_pts = video_data.frame_time;
             let frame_time = Duration::from_millis(video_data.diff_to_prev_frame);
             if presentation_time + frame_time > now {
