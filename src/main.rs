@@ -15,6 +15,7 @@ use sdl2::{
     pixels::{Color, PixelFormatEnum},
     render::TextureValueError,
     render::WindowCanvas,
+    EventPump,
 };
 use std::{
     env, fmt,
@@ -53,6 +54,15 @@ impl fmt::Display for FFplayError {
 }
 
 impl std::error::Error for FFplayError {}
+
+enum EventState {
+    None,
+    Quit,
+    Pause,
+    SeekForward,
+    SeekBackward,
+    Resize,
+}
 
 fn main() -> Result<(), FFplayError> {
     env_logger::init();
@@ -119,6 +129,47 @@ fn main() -> Result<(), FFplayError> {
         canvas.set_viewport(sdl2::rect::Rect::new(x, y, new_w as u32, new_h as u32));
     };
 
+    let event_transform = |event: Event| -> EventState {
+        match event {
+            Event::Quit { .. }
+            | Event::KeyDown {
+                keycode: Some(Keycode::Escape),
+                ..
+            } => return EventState::Quit,
+            Event::KeyDown {
+                keycode: Some(keycode),
+                ..
+            } => match keycode {
+                Keycode::Space => return EventState::Pause,
+                Keycode::Left => return EventState::SeekBackward,
+                Keycode::Right => return EventState::SeekForward,
+                _ => return EventState::None,
+            },
+            Event::Window {
+                timestamp: _,
+                window_id: _,
+                win_event: WindowEvent::Resized(_, _),
+            } => return EventState::Resize,
+            _ => return EventState::None,
+        }
+    };
+
+    let event_pumper = |paused: &bool, event_pump: &mut EventPump| -> _ {
+        if *paused {
+            let mut res: Vec<EventState> = Vec::with_capacity(1);
+            for event in event_pump.wait_iter() {
+                res.push(event_transform(event));
+            }
+            res
+        } else {
+            let mut res: Vec<EventState> = Vec::with_capacity(1);
+            for event in event_pump.poll_iter() {
+                res.push(event_transform(event));
+            }
+            res
+        }
+    };
+
     handle_window_resize(&mut canvas, (player.width(), player.height()));
 
     let mut paused = false;
@@ -129,107 +180,41 @@ fn main() -> Result<(), FFplayError> {
     let seek_secs: i64 = 20000;
     'running: loop {
         canvas.clear();
-        if paused {
-            for event in event_pump.wait_iter() {
-                match event {
-                    Event::Quit { .. }
-                    | Event::KeyDown {
-                        keycode: Some(Keycode::Escape),
-                        ..
-                    } => break 'running,
-                    Event::KeyDown {
-                        keycode: Some(keycode),
-                        ..
-                    } => match keycode {
-                        Keycode::Space => {
-                            if paused {
-                                presentation_time = Instant::now();
-                            }
-                            paused = !paused;
-                            player
-                                .set_paused(paused)
-                                .map_err(FFplayError::PlayerError)?;
-                            debug!("space pressed paused={}", paused);
-                            continue 'running;
-                        }
-                        Keycode::Left => {
-                            let seek_to = last_pts as i64 - seek_secs;
-                            debug!("seek to {} (last_pts={})", seek_to, last_pts);
-                            last_pts = seek_to as u64;
-                            seek_serial = player.seek(seek_to);
-                            debug!("seek to {} (serial {})", seek_to, seek_serial);
-                            continue 'running;
-                        }
-                        Keycode::Right => {
-                            let seek_to = last_pts as i64 + seek_secs;
-                            debug!("seek to {} (last_pts={})", seek_to, last_pts);
-                            last_pts = seek_to as u64;
-                            seek_serial = player.seek(seek_to);
-                            debug!("seek to {} (serial {})", seek_to, seek_serial);
-                            continue 'running;
-                        }
-                        _ => {}
-                    },
-                    Event::Window {
-                        timestamp: _,
-                        window_id: _,
-                        win_event: WindowEvent::Resized(_, _),
-                    } => {
-                        handle_window_resize(&mut canvas, (player.width(), player.height()));
+        let events = event_pumper(&paused, &mut event_pump);
+        for event in events {
+            match event {
+                EventState::Quit => break 'running,
+                EventState::Pause => {
+                    if paused {
+                        presentation_time = Instant::now();
                     }
-                    _ => {}
+                    paused = !paused;
+                    player
+                        .set_paused(paused)
+                        .map_err(FFplayError::PlayerError)?;
+                    debug!("space pressed paused={}", paused);
+                    continue 'running;
                 }
-            }
-        } else {
-            for event in event_pump.poll_iter() {
-                match event {
-                    Event::Quit { .. }
-                    | Event::KeyDown {
-                        keycode: Some(Keycode::Escape),
-                        ..
-                    } => break 'running,
-                    Event::KeyDown {
-                        keycode: Some(keycode),
-                        ..
-                    } => match keycode {
-                        Keycode::Space => {
-                            if paused {
-                                presentation_time = Instant::now();
-                            }
-                            paused = !paused;
-                            player
-                                .set_paused(paused)
-                                .map_err(FFplayError::PlayerError)?;
-                            debug!("space pressed paused={}", paused);
-                            continue 'running;
-                        }
-                        Keycode::Left => {
-                            let seek_to = last_pts as i64 - seek_secs;
-                            debug!("seek to {} (last_pts={})", seek_to, last_pts);
-                            last_pts = seek_to as u64;
-                            seek_serial = player.seek(seek_to);
-                            debug!("seek to {} (serial {})", seek_to, seek_serial);
-                            continue 'running;
-                        }
-                        Keycode::Right => {
-                            let seek_to = last_pts as i64 + seek_secs;
-                            debug!("seek to {} (last_pts={})", seek_to, last_pts);
-                            last_pts = seek_to as u64;
-                            seek_serial = player.seek(seek_to);
-                            debug!("seek to {} (serial {})", seek_to, seek_serial);
-                            continue 'running;
-                        }
-                        _ => {}
-                    },
-                    Event::Window {
-                        timestamp: _,
-                        window_id: _,
-                        win_event: WindowEvent::Resized(_, _),
-                    } => {
-                        handle_window_resize(&mut canvas, (player.width(), player.height()));
-                    }
-                    _ => {}
+                EventState::SeekBackward => {
+                    let seek_to = last_pts as i64 - seek_secs;
+                    debug!("seek to {} (last_pts={})", seek_to, last_pts);
+                    last_pts = seek_to as u64;
+                    seek_serial = player.seek(seek_to);
+                    debug!("seek to {} (serial {})", seek_to, seek_serial);
+                    continue 'running;
                 }
+                EventState::SeekForward => {
+                    let seek_to = last_pts as i64 + seek_secs;
+                    debug!("seek to {} (last_pts={})", seek_to, last_pts);
+                    last_pts = seek_to as u64;
+                    seek_serial = player.seek(seek_to);
+                    debug!("seek to {} (serial {})", seek_to, seek_serial);
+                    continue 'running;
+                }
+                EventState::Resize => {
+                    handle_window_resize(&mut canvas, (player.width(), player.height()));
+                }
+                EventState::None => {}
             }
         }
 
