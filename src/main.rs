@@ -15,7 +15,8 @@ use sdl2::{
     pixels::{Color, PixelFormatEnum},
     render::TextureValueError,
     render::WindowCanvas,
-    EventPump,
+    video::WindowBuildError,
+    EventPump, IntegerOrSdlError,
 };
 use std::{
     env, fmt,
@@ -30,6 +31,12 @@ use crate::file_decoder::VideoData;
 pub enum FFplayError {
     PlayerError(error_stack::Report<FileDecoderError>),
     SDL2InitError(String),
+    SDL2VideoSubsystemError(String),
+    SDL2WindowBuildError(WindowBuildError),
+    SDL2EventPumpError(String),
+    SDL2CanvasBuildError(IntegerOrSdlError),
+    SDL2TextureLockError(String),
+    SDL2CopyTextureToCanvasError(String),
     VideoSubSystemError(String),
     TextureValueError(TextureValueError),
 }
@@ -43,6 +50,28 @@ impl fmt::Display for FFplayError {
             FFplayError::SDL2InitError(err) => {
                 fmt.write_fmt(format_args!("FFplayError SDL2 init error: {}", err))
             }
+            FFplayError::SDL2VideoSubsystemError(err) => fmt.write_fmt(format_args!(
+                "FFplayError SDL2 video subsystem error: {}",
+                err
+            )),
+            FFplayError::SDL2WindowBuildError(err) => fmt.write_fmt(format_args!(
+                "FFplayError SDL2 window build error: {}",
+                err.to_string()
+            )),
+            FFplayError::SDL2EventPumpError(err) => {
+                fmt.write_fmt(format_args!("FFplayError SDL2 event pump error: {}", err))
+            }
+            FFplayError::SDL2CanvasBuildError(err) => fmt.write_fmt(format_args!(
+                "FFplayError SDL2 canvas build error: {}",
+                err.to_string()
+            )),
+            FFplayError::SDL2TextureLockError(err) => {
+                fmt.write_fmt(format_args!("FFplayError SDL2 texture lock error: {}", err))
+            }
+            FFplayError::SDL2CopyTextureToCanvasError(err) => fmt.write_fmt(format_args!(
+                "FFplayError SDL2 copy texture to canvas error: {}",
+                err
+            )),
             FFplayError::VideoSubSystemError(err) => {
                 fmt.write_fmt(format_args!("FFplayError video subsystem error: {}", err))
             }
@@ -56,7 +85,6 @@ impl fmt::Display for FFplayError {
 impl std::error::Error for FFplayError {}
 
 enum EventState {
-    None,
     Quit,
     Pause,
     SeekForward,
@@ -64,10 +92,41 @@ enum EventState {
     Resize,
 }
 
+fn sdl_init(
+    window_width: u32,
+    window_height: u32,
+) -> Result<(WindowCanvas, EventPump), FFplayError> {
+    let sdl_context = sdl2::init().map_err(FFplayError::SDL2InitError)?;
+    let video_subsystem = sdl_context
+        .video()
+        .map_err(FFplayError::SDL2VideoSubsystemError)?;
+
+    info!("create window with {}x{}", window_width, window_height);
+    let window = video_subsystem
+        .window("ffplay", window_width, window_height)
+        .resizable()
+        .position_centered()
+        .maximized()
+        .allow_highdpi()
+        .build()
+        .map_err(FFplayError::SDL2WindowBuildError)?;
+
+    let mut canvas = window
+        .into_canvas()
+        .build()
+        .map_err(FFplayError::SDL2CanvasBuildError)?;
+    canvas.set_draw_color(Color::RGB(0, 0, 0));
+    canvas.clear();
+    canvas.present();
+    let event_pump = sdl_context
+        .event_pump()
+        .map_err(FFplayError::SDL2EventPumpError)?;
+
+    Ok((canvas, event_pump))
+}
+
 fn main() -> Result<(), FFplayError> {
     env_logger::init();
-    let sdl_context = sdl2::init().map_err(FFplayError::SDL2InitError)?;
-    let video_subsystem = sdl_context.video().unwrap();
 
     let mut player = file_decoder::FileDecoder::new();
     player
@@ -77,32 +136,14 @@ fn main() -> Result<(), FFplayError> {
     let def_window_width: u32 = 1920;
     let def_window_height: u32 = 1080;
 
-    info!(
-        "create window with {}x{}",
-        def_window_width, def_window_height
-    );
-    let window = video_subsystem
-        .window("ffplay", def_window_width, def_window_height)
-        .resizable()
-        .position_centered()
-        .maximized()
-        .allow_highdpi()
-        .build()
-        .unwrap();
-
-    let mut canvas = window.into_canvas().build().unwrap();
-    canvas.set_draw_color(Color::RGB(0, 0, 0));
-    canvas.clear();
-    canvas.present();
-    let mut event_pump = sdl_context.event_pump().unwrap();
+    let (mut canvas, mut event_pump) = sdl_init(def_window_width, def_window_height)?;
 
     let texture_creator = canvas.texture_creator();
-
-    let video_queue = player.video_queue();
-
     let mut texture = texture_creator
         .create_texture_streaming(PixelFormatEnum::RGB24, player.width(), player.height())
         .map_err(FFplayError::TextureValueError)?;
+
+    let video_queue = player.video_queue();
 
     let handle_window_resize = |canvas: &mut WindowCanvas, video_size: (u32, u32)| {
         let new_window_size = canvas.window().drawable_size();
@@ -129,28 +170,28 @@ fn main() -> Result<(), FFplayError> {
         canvas.set_viewport(sdl2::rect::Rect::new(x, y, new_w as u32, new_h as u32));
     };
 
-    let event_transform = |event: Event| -> EventState {
+    let event_transform = |event: Event| -> Option<EventState> {
         match event {
             Event::Quit { .. }
             | Event::KeyDown {
                 keycode: Some(Keycode::Escape),
                 ..
-            } => return EventState::Quit,
+            } => return Some(EventState::Quit),
             Event::KeyDown {
                 keycode: Some(keycode),
                 ..
             } => match keycode {
-                Keycode::Space => return EventState::Pause,
-                Keycode::Left => return EventState::SeekBackward,
-                Keycode::Right => return EventState::SeekForward,
-                _ => return EventState::None,
+                Keycode::Space => return Some(EventState::Pause),
+                Keycode::Left => return Some(EventState::SeekBackward),
+                Keycode::Right => return Some(EventState::SeekForward),
+                _ => return None,
             },
             Event::Window {
                 timestamp: _,
                 window_id: _,
                 win_event: WindowEvent::Resized(_, _),
-            } => return EventState::Resize,
-            _ => return EventState::None,
+            } => return Some(EventState::Resize),
+            _ => return None,
         }
     };
 
@@ -158,18 +199,23 @@ fn main() -> Result<(), FFplayError> {
         if *paused {
             let mut res: Vec<EventState> = Vec::with_capacity(1);
             for event in event_pump.wait_iter() {
-                res.push(event_transform(event));
+                if let Some(new_ev) = event_transform(event) {
+                    res.push(new_ev);
+                }
             }
             res
         } else {
             let mut res: Vec<EventState> = Vec::with_capacity(1);
             for event in event_pump.poll_iter() {
-                res.push(event_transform(event));
+                if let Some(new_ev) = event_transform(event) {
+                    res.push(new_ev);
+                }
             }
             res
         }
     };
 
+    // Setup canvas for initial window size:
     handle_window_resize(&mut canvas, (player.width(), player.height()));
 
     let mut paused = false;
@@ -214,7 +260,6 @@ fn main() -> Result<(), FFplayError> {
                 EventState::Resize => {
                     handle_window_resize(&mut canvas, (player.width(), player.height()));
                 }
-                EventState::None => {}
             }
         }
 
@@ -256,9 +301,11 @@ fn main() -> Result<(), FFplayError> {
                     assert!(video_data.video_frame.planes() == 1);
                     video_data.video_frame.data(0).read_exact(buffer).unwrap();
                 })
-                .unwrap();
+                .map_err(FFplayError::SDL2TextureLockError)?;
 
-            canvas.copy(&texture, None, None).unwrap();
+            canvas
+                .copy(&texture, None, None)
+                .map_err(FFplayError::SDL2CopyTextureToCanvasError)?;
 
             trace!(
                 "ffplay: present frame with pts {}",
