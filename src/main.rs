@@ -170,48 +170,39 @@ fn main() -> Result<(), FFplayError> {
         canvas.set_viewport(sdl2::rect::Rect::new(x, y, new_w as u32, new_h as u32));
     };
 
-    let event_transform = |event: Event| -> Option<EventState> {
-        match event {
-            Event::Quit { .. }
-            | Event::KeyDown {
-                keycode: Some(Keycode::Escape),
-                ..
-            } => return Some(EventState::Quit),
-            Event::KeyDown {
-                keycode: Some(keycode),
-                ..
-            } => match keycode {
-                Keycode::Space => return Some(EventState::Pause),
-                Keycode::Left => return Some(EventState::SeekBackward),
-                Keycode::Right => return Some(EventState::SeekForward),
+    let event_transform = |event: Option<Event>| -> Option<EventState> {
+        if let Some(event) = event {
+            match event {
+                Event::Quit { .. }
+                | Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => return Some(EventState::Quit),
+                Event::KeyDown {
+                    keycode: Some(keycode),
+                    ..
+                } => match keycode {
+                    Keycode::Space => return Some(EventState::Pause),
+                    Keycode::Left => return Some(EventState::SeekBackward),
+                    Keycode::Right => return Some(EventState::SeekForward),
+                    _ => return None,
+                },
+                Event::Window {
+                    timestamp: _,
+                    window_id: _,
+                    win_event: WindowEvent::Resized(_, _),
+                } => return Some(EventState::Resize),
                 _ => return None,
-            },
-            Event::Window {
-                timestamp: _,
-                window_id: _,
-                win_event: WindowEvent::Resized(_, _),
-            } => return Some(EventState::Resize),
-            _ => return None,
+            }
         }
+        None
     };
 
-    let event_pumper = |paused: &bool, event_pump: &mut EventPump| -> _ {
+    let event_pumper = |paused: &bool, event_pump: &mut EventPump| -> Option<EventState> {
         if *paused {
-            let mut res: Vec<EventState> = Vec::with_capacity(1);
-            for event in event_pump.wait_iter() {
-                if let Some(new_ev) = event_transform(event) {
-                    res.push(new_ev);
-                }
-            }
-            res
+            event_transform(event_pump.wait_iter().next())
         } else {
-            let mut res: Vec<EventState> = Vec::with_capacity(1);
-            for event in event_pump.poll_iter() {
-                if let Some(new_ev) = event_transform(event) {
-                    res.push(new_ev);
-                }
-            }
-            res
+            event_transform(event_pump.poll_iter().next())
         }
     };
 
@@ -226,8 +217,7 @@ fn main() -> Result<(), FFplayError> {
     let seek_secs: i64 = 20000;
     'running: loop {
         canvas.clear();
-        let events = event_pumper(&paused, &mut event_pump);
-        for event in events {
+        if let Some(event) = event_pumper(&paused, &mut event_pump) {
             match event {
                 EventState::Quit => break 'running,
                 EventState::Pause => {
