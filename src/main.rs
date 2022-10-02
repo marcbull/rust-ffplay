@@ -198,8 +198,8 @@ fn main() -> Result<(), FFplayError> {
         None
     };
 
-    let event_pumper = |paused: &bool, event_pump: &mut EventPump| -> Option<EventState> {
-        if *paused {
+    let event_pumper = |wait_for_event: bool, event_pump: &mut EventPump| -> Option<EventState> {
+        if wait_for_event {
             event_transform(event_pump.wait_iter().next())
         } else {
             event_transform(event_pump.poll_iter().next())
@@ -210,6 +210,7 @@ fn main() -> Result<(), FFplayError> {
     handle_window_resize(&mut canvas, (player.width(), player.height()));
 
     let mut paused = false;
+    let mut need_update = false;
     let mut presentation_time = Instant::now();
     let mut video_data_item: Option<VideoData> = None;
     let mut last_pts: u64 = 0;
@@ -217,7 +218,7 @@ fn main() -> Result<(), FFplayError> {
     let seek_secs: i64 = 20000;
     'running: loop {
         canvas.clear();
-        if let Some(event) = event_pumper(&paused, &mut event_pump) {
+        if let Some(event) = event_pumper(paused && !need_update, &mut event_pump) {
             match event {
                 EventState::Quit => break 'running,
                 EventState::Pause => {
@@ -225,9 +226,6 @@ fn main() -> Result<(), FFplayError> {
                         presentation_time = Instant::now();
                     }
                     paused = !paused;
-                    player
-                        .set_paused(paused)
-                        .map_err(FFplayError::PlayerError)?;
                     debug!("space pressed paused={}", paused);
                     continue 'running;
                 }
@@ -236,6 +234,7 @@ fn main() -> Result<(), FFplayError> {
                     debug!("seek to {} (last_pts={})", seek_to, last_pts);
                     last_pts = seek_to as u64;
                     seek_serial = player.seek(seek_to);
+                    need_update = true;
                     debug!("seek to {} (serial {})", seek_to, seek_serial);
                     continue 'running;
                 }
@@ -244,6 +243,7 @@ fn main() -> Result<(), FFplayError> {
                     debug!("seek to {} (last_pts={})", seek_to, last_pts);
                     last_pts = seek_to as u64;
                     seek_serial = player.seek(seek_to);
+                    need_update = true;
                     debug!("seek to {} (serial {})", seek_to, seek_serial);
                     continue 'running;
                 }
@@ -253,7 +253,7 @@ fn main() -> Result<(), FFplayError> {
             }
         }
 
-        if paused {
+        if paused && !need_update {
             continue 'running;
         }
 
@@ -301,6 +301,7 @@ fn main() -> Result<(), FFplayError> {
                 "ffplay: present frame with pts {}",
                 video_data.video_frame.pts().unwrap_or_default()
             );
+            need_update = false;
 
             canvas.present();
         } else {

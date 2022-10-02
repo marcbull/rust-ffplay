@@ -18,7 +18,7 @@ use std::{
     path::Path,
     sync::{mpsc, mpsc::channel, Arc, Weak},
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 pub use error::FileDecoderError;
@@ -35,8 +35,6 @@ pub struct FileDecoder {
     width: u32,
     #[new(default)]
     height: u32,
-    #[new(value = "false")]
-    paused: bool,
     #[new(
         value = "Arc::new(BlockingDelayQueue::new_with_capacity(FileDecoder::PACKET_QUEUE_SIZE))"
     )]
@@ -56,8 +54,6 @@ pub struct FileDecoder {
     demuxer_seek_sender: Option<mpsc::Sender<i64>>,
     #[new(default)]
     demuxer_serial_sender: Option<mpsc::Sender<u64>>,
-    #[new(default)]
-    demuxer_pause_sender: Option<mpsc::Sender<bool>>,
     // Sender for decoder:
     #[new(default)]
     decoder_serial_sender: Option<mpsc::Sender<u64>>,
@@ -71,13 +67,10 @@ struct DemuxerData {
     time_base: Rational,
     #[new(value = "0")]
     seek_serial: u64,
-    #[new(value = "false")]
-    paused: bool,
     packet_queue: PacketQueue,
     running: Weak<bool>,
     seek_receiver: mpsc::Receiver<i64>,
     serial_receiver: mpsc::Receiver<u64>,
-    pause_receiver: mpsc::Receiver<bool>,
 }
 
 #[derive(new)]
@@ -140,10 +133,6 @@ impl FileDecoder {
             mpsc::Sender<u64>,
             mpsc::Receiver<u64>,
         ) = channel();
-        let (demuxer_pause_sender, demuxer_pause_receiver): (
-            mpsc::Sender<bool>,
-            mpsc::Receiver<bool>,
-        ) = channel();
         let (decoder_serial_sender, decoder_serial_receiver): (
             mpsc::Sender<u64>,
             mpsc::Receiver<u64>,
@@ -151,7 +140,6 @@ impl FileDecoder {
 
         self.demuxer_seek_sender = Some(demuxer_seek_sender);
         self.demuxer_serial_sender = Some(demuxer_serial_sender);
-        self.demuxer_pause_sender = Some(demuxer_pause_sender);
         self.decoder_serial_sender = Some(decoder_serial_sender);
 
         let packet_queue = self.packet_queue.clone();
@@ -163,7 +151,6 @@ impl FileDecoder {
             Arc::downgrade(&running),
             demuxer_seek_receiver,
             demuxer_serial_receiver,
-            demuxer_pause_receiver,
         );
 
         self.width = decoder.width();
@@ -185,22 +172,6 @@ impl FileDecoder {
             let mut demuxer_data = demuxer_data;
             move || -> Result<(), FileDecoderError> {
                 'demuxing: loop {
-                    let rec = demuxer_data.pause_receiver.try_recv();
-                    if rec.is_ok() {
-                        if rec.ok().unwrap() {
-                            demuxer_data.paused = true;
-                            // demuxer_data
-                            //     .stream
-                            //     .pause()
-                            //     .map_err(FileDecoderError::FfmpegError)?;
-                        } else {
-                            demuxer_data.paused = false;
-                            // demuxer_data
-                            //     .stream
-                            //     .play()
-                            //     .map_err(FileDecoderError::FfmpegError)?;
-                        }
-                    }
                     let rec = demuxer_data.seek_receiver.try_recv();
                     if rec.is_ok() {
                         let seek_to = rec.ok().unwrap();
@@ -224,27 +195,24 @@ impl FileDecoder {
                             .map_err(FileDecoderError::FfmpegError)?;
                         demuxer_data.packet_queue.clear();
                     }
-                    if !demuxer_data.paused {
-                        if let Some((stream, packet)) = demuxer_data.stream.packets().next() {
-                            if stream.index() == demuxer_data.stream_index {
-                                trace!(
-                                    "Demuxer: queue packet with pts {}",
-                                    packet.pts().unwrap_or_default()
-                                );
-                                let packet_data = PacketData::new(demuxer_data.seek_serial, packet);
-                                demuxer_data
-                                    .packet_queue
-                                    .add(DelayItem::new(Some(packet_data), Instant::now()));
-                            }
-                        } else {
-                            debug!("no more packages, quit demuxer");
+
+                    if let Some((stream, packet)) = demuxer_data.stream.packets().next() {
+                        if stream.index() == demuxer_data.stream_index {
+                            trace!(
+                                "Demuxer: queue packet with pts {}",
+                                packet.pts().unwrap_or_default()
+                            );
+                            let packet_data = PacketData::new(demuxer_data.seek_serial, packet);
                             demuxer_data
                                 .packet_queue
-                                .add(DelayItem::new(None, Instant::now()));
-                            break 'demuxing;
+                                .add(DelayItem::new(Some(packet_data), Instant::now()));
                         }
                     } else {
-                        thread::sleep(Duration::from_millis(100));
+                        debug!("no more packages, quit demuxer");
+                        demuxer_data
+                            .packet_queue
+                            .add(DelayItem::new(None, Instant::now()));
+                        break 'demuxing;
                     }
 
                     if demuxer_data.running.upgrade().is_none() {
@@ -363,7 +331,7 @@ impl FileDecoder {
                         if let Some(packet_data) = packet_data {
                             trace!("decoder: got packet");
                             if decoder_data.seek_serial != packet_data.serial {
-                                debug!("decoder: serial wrong continue");
+                                trace!("decoder: serial wrong continue");
                                 continue 'decoding;
                             }
                             trace!(
@@ -447,16 +415,6 @@ impl FileDecoder {
             .send(seek_to)
             .unwrap();
         self.seek_serial
-    }
-
-    pub fn set_paused(&mut self, paused: bool) -> Result<(), FileDecoderError> {
-        self.paused = paused;
-        self.demuxer_pause_sender
-            .as_ref()
-            .unwrap()
-            .send(self.paused)
-            .map_err(FileDecoderError::SendError)?;
-        Ok(())
     }
 
     pub fn video_queue(&self) -> VideoQueue {
