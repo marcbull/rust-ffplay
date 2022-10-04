@@ -19,9 +19,7 @@ use sdl2::{
     EventPump, IntegerOrSdlError,
 };
 use std::{
-    env, fmt,
-    io::prelude::*,
-    thread,
+    env, fmt, thread,
     time::{Duration, Instant},
 };
 
