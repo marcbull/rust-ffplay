@@ -14,7 +14,7 @@ use sdl2::{
     keyboard::Keycode,
     pixels::{Color, PixelFormatEnum},
     render::TextureValueError,
-    render::WindowCanvas,
+    render::{UpdateTextureError, UpdateTextureYUVError, WindowCanvas},
     video::WindowBuildError,
     EventPump, IntegerOrSdlError,
 };
@@ -37,6 +37,8 @@ pub enum FFplayError {
     SDL2CanvasBuildError(IntegerOrSdlError),
     SDL2TextureLockError(String),
     SDL2CopyTextureToCanvasError(String),
+    SDL2TextureUpdateError(UpdateTextureError),
+    SDL2TextureUpdateYUVError(UpdateTextureYUVError),
     VideoSubSystemError(String),
     TextureValueError(TextureValueError),
 }
@@ -71,6 +73,14 @@ impl fmt::Display for FFplayError {
             FFplayError::SDL2CopyTextureToCanvasError(err) => fmt.write_fmt(format_args!(
                 "FFplayError SDL2 copy texture to canvas error: {}",
                 err
+            )),
+            FFplayError::SDL2TextureUpdateError(err) => fmt.write_fmt(format_args!(
+                "FFplayError SDL2 texture update error: {}",
+                err.to_string()
+            )),
+            FFplayError::SDL2TextureUpdateYUVError(err) => fmt.write_fmt(format_args!(
+                "FFplayError SDL2 texture update error: {}",
+                err.to_string()
             )),
             FFplayError::VideoSubSystemError(err) => {
                 fmt.write_fmt(format_args!("FFplayError video subsystem error: {}", err))
@@ -286,12 +296,30 @@ fn main() -> Result<(), FFplayError> {
             }
             presentation_time += frame_time;
 
-            texture
-                .with_lock(None, |buffer: &mut [u8], _pitch: usize| {
-                    assert!(video_data.video_frame.planes() == 1);
-                    video_data.video_frame.data(0).read_exact(buffer).unwrap();
-                })
-                .map_err(FFplayError::SDL2TextureLockError)?;
+            if video_data.video_frame.planes() == 1 {
+                texture
+                    .update(
+                        None,
+                        video_data.video_frame.data(0),
+                        video_data.video_frame.stride(0),
+                    )
+                    .map_err(FFplayError::SDL2TextureUpdateError)?;
+            } else {
+                assert!(video_data.video_frame.planes() == 3);
+
+                let y_plane = video_data.video_frame.data(0);
+                let y_stride = video_data.video_frame.stride(0);
+                let u_plane = video_data.video_frame.data(1);
+                let u_stride = video_data.video_frame.stride(1);
+                let v_plane = video_data.video_frame.data(2);
+                let v_stride = video_data.video_frame.stride(2);
+
+                texture
+                    .update_yuv(
+                        None, y_plane, y_stride, u_plane, u_stride, v_plane, v_stride,
+                    )
+                    .map_err(FFplayError::SDL2TextureUpdateYUVError)?;
+            }
 
             canvas
                 .copy(&texture, None, None)
