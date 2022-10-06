@@ -6,6 +6,7 @@ extern crate derive_new;
 mod file_decoder;
 
 use error_stack::Result;
+use ffmpeg_next::format::{self, Pixel};
 use file_decoder::FileDecoderError;
 use log::{debug, info, trace};
 use partial_min_max::{max, min};
@@ -54,17 +55,15 @@ impl fmt::Display for FFplayError {
                 "FFplayError SDL2 video subsystem error: {}",
                 err
             )),
-            FFplayError::SDL2WindowBuildError(err) => fmt.write_fmt(format_args!(
-                "FFplayError SDL2 window build error: {}",
-                err.to_string()
-            )),
+            FFplayError::SDL2WindowBuildError(err) => {
+                fmt.write_fmt(format_args!("FFplayError SDL2 window build error: {}", err))
+            }
             FFplayError::SDL2EventPumpError(err) => {
                 fmt.write_fmt(format_args!("FFplayError SDL2 event pump error: {}", err))
             }
-            FFplayError::SDL2CanvasBuildError(err) => fmt.write_fmt(format_args!(
-                "FFplayError SDL2 canvas build error: {}",
-                err.to_string()
-            )),
+            FFplayError::SDL2CanvasBuildError(err) => {
+                fmt.write_fmt(format_args!("FFplayError SDL2 canvas build error: {}", err))
+            }
             FFplayError::SDL2TextureLockError(err) => {
                 fmt.write_fmt(format_args!("FFplayError SDL2 texture lock error: {}", err))
             }
@@ -74,11 +73,11 @@ impl fmt::Display for FFplayError {
             )),
             FFplayError::SDL2TextureUpdateError(err) => fmt.write_fmt(format_args!(
                 "FFplayError SDL2 texture update error: {}",
-                err.to_string()
+                err
             )),
             FFplayError::SDL2TextureUpdateYUVError(err) => fmt.write_fmt(format_args!(
                 "FFplayError SDL2 texture update error: {}",
-                err.to_string()
+                err
             )),
             FFplayError::VideoSubSystemError(err) => {
                 fmt.write_fmt(format_args!("FFplayError video subsystem error: {}", err))
@@ -133,13 +132,27 @@ fn sdl_init(
     Ok((canvas, event_pump))
 }
 
+fn av_to_sdl_pixel_format_mapper(fmt: &format::Pixel) -> PixelFormatEnum {
+    match fmt {
+        format::Pixel::YUV420P => PixelFormatEnum::IYUV,
+        format::Pixel::YUYV422 => PixelFormatEnum::YUY2,
+        format::Pixel::UYVY422 => PixelFormatEnum::UYVY,
+        _ => PixelFormatEnum::Unknown,
+    }
+}
+
 fn main() -> Result<(), FFplayError> {
     env_logger::init();
 
-    let mut player = file_decoder::FileDecoder::new();
-    player
-        .start(&env::args().nth(1).expect("Cannot open file."))
+    let mut player_builder =
+        file_decoder::FileDecoderBuilder::new(env::args().nth(1).expect("Cannot open file."));
+    let mut player = player_builder
+        .pixel_format(Pixel::YUV420P)
+        .build()
         .map_err(FFplayError::PlayerError)?;
+
+    player.init().map_err(FFplayError::PlayerError)?;
+    player.start().map_err(FFplayError::PlayerError)?;
 
     let def_window_width: u32 = 1920;
     let def_window_height: u32 = 1080;
@@ -148,7 +161,11 @@ fn main() -> Result<(), FFplayError> {
 
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
-        .create_texture_streaming(PixelFormatEnum::RGB24, player.width(), player.height())
+        .create_texture_streaming(
+            av_to_sdl_pixel_format_mapper(&player.pixel_format()),
+            player.width(),
+            player.height(),
+        )
         .map_err(FFplayError::TextureValueError)?;
 
     let video_queue = player.video_queue();
@@ -302,6 +319,19 @@ fn main() -> Result<(), FFplayError> {
                         video_data.video_frame.stride(0),
                     )
                     .map_err(FFplayError::SDL2TextureUpdateError)?;
+            } else if video_data.video_frame.planes() == 2 {
+                let y_plane = video_data.video_frame.data(0);
+                let y_stride = video_data.video_frame.stride(0);
+                let u_plane = video_data.video_frame.data(1);
+                let u_stride = video_data.video_frame.stride(1);
+                let v_plane = video_data.video_frame.data(2);
+                let v_stride = video_data.video_frame.stride(2);
+
+                texture
+                    .update_yuv(
+                        None, y_plane, y_stride, u_plane, u_stride, v_plane, v_stride,
+                    )
+                    .map_err(FFplayError::SDL2TextureUpdateYUVError)?;
             } else {
                 assert!(video_data.video_frame.planes() == 3);
 

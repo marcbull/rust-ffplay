@@ -14,6 +14,7 @@ use ffmpeg_next::{
 };
 use log::{debug, error, trace, warn};
 use std::{
+    mem::swap,
     ops::RangeFull,
     path::Path,
     sync::{mpsc, mpsc::channel, Arc, Weak},
@@ -28,9 +29,36 @@ pub type VideoQueue = Arc<BlockingDelayQueue<DelayItem<Option<VideoData>>>>;
 
 #[derive(new)]
 #[allow(clippy::too_many_arguments)]
-pub struct FileDecoder {
-    #[new(default)]
+pub struct FileDecoderBuilder {
     uri: String,
+    #[new(value = "Pixel::YUV420P")]
+    pixel_format: Pixel,
+}
+
+impl FileDecoderBuilder {
+    pub fn build(&self) -> Result<FileDecoder, FileDecoderError> {
+        let mut file_decoder = FileDecoder::new(self.uri.to_owned(), self.pixel_format);
+        file_decoder.init()?;
+        Ok(file_decoder)
+    }
+
+    pub fn pixel_format(&mut self, pix_fmt: Pixel) -> &mut FileDecoderBuilder {
+        self.pixel_format = pix_fmt;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn uri(&mut self, uri: String) -> &mut FileDecoderBuilder {
+        self.uri = uri;
+        self
+    }
+}
+
+#[derive(new)]
+#[allow(clippy::too_many_arguments)]
+pub struct FileDecoder {
+    uri: String,
+    pixel_format: Pixel,
     #[new(default)]
     width: u32,
     #[new(default)]
@@ -57,6 +85,10 @@ pub struct FileDecoder {
     // Sender for decoder:
     #[new(default)]
     decoder_serial_sender: Option<mpsc::Sender<u64>>,
+    #[new(value = "None")]
+    demuxer_data: Option<DemuxerData>,
+    #[new(value = "None")]
+    decoder_data: Option<DecoderData>,
 }
 
 #[derive(new)]
@@ -75,6 +107,7 @@ struct DemuxerData {
 
 #[derive(new)]
 struct DecoderData {
+    pixel_format: Pixel,
     decoder: ffmpeg_next::decoder::Video,
     time_base: Rational,
     packet_queue: PacketQueue,
@@ -103,12 +136,9 @@ impl FileDecoder {
     const PACKET_QUEUE_SIZE: usize = 60;
     const FRAME_QUEUE_SIZE: usize = 3;
 
-    pub fn start(&mut self, uri: &String) -> Result<(), FileDecoderError> {
+    pub fn init(&mut self) -> Result<(), FileDecoderError> {
         ffmpeg_next::init().map_err(FileDecoderError::FfmpegError)?;
-        self.uri = uri.to_owned();
-        //let path = Path::new(&self.uri);
         let input = input(&Path::new(&self.uri)).map_err(FileDecoderError::FfmpegError)?;
-
         let video_stream_input = input
             .streams()
             .best(Type::Video)
@@ -120,10 +150,13 @@ impl FileDecoder {
         let context_decoder =
             ffmpeg_next::codec::context::Context::from_parameters(video_stream_input.parameters())
                 .map_err(FileDecoderError::FfmpegError)?;
+
         let decoder = context_decoder
             .decoder()
             .video()
             .map_err(FileDecoderError::FfmpegError)?;
+
+        warn!("decoder format {:?}", decoder.format());
 
         let running = Arc::new(true);
 
@@ -143,34 +176,43 @@ impl FileDecoder {
         self.decoder_serial_sender = Some(decoder_serial_sender);
 
         let packet_queue = self.packet_queue.clone();
-        let demuxer_data = DemuxerData::new(
+        self.demuxer_data.replace(DemuxerData::new(
             input,
             video_stream_index,
             video_stream_tb,
-            packet_queue,
+            packet_queue.clone(),
             Arc::downgrade(&running),
             demuxer_seek_receiver,
             demuxer_serial_receiver,
-        );
+        ));
 
         self.width = decoder.width();
         self.height = decoder.height();
 
         let video_producer_queue = self.video_queue.clone();
-        let decoder_data = DecoderData::new(
+        self.decoder_data.replace(DecoderData::new(
+            self.pixel_format,
             decoder,
             video_stream_tb,
-            demuxer_data.packet_queue.clone(),
+            packet_queue,
             video_producer_queue,
             Arc::downgrade(&running),
             decoder_serial_receiver,
-        );
+        ));
 
         self.running.replace(running);
 
+        Ok(())
+    }
+
+    pub fn start(&mut self) -> Result<(), FileDecoderError> {
+        let mut demuxer_data: Option<DemuxerData> = None;
+        swap(&mut self.demuxer_data, &mut demuxer_data);
+
         self.threads.push(thread::spawn({
-            let mut demuxer_data = demuxer_data;
+            let mut demuxer_data = demuxer_data.unwrap();
             move || -> Result<(), FileDecoderError> {
+                // let mut demuxer_data = demuxer_data.unwrap();
                 'demuxing: loop {
                     let rec = demuxer_data.seek_receiver.try_recv();
                     if rec.is_ok() {
@@ -216,6 +258,7 @@ impl FileDecoder {
                     }
 
                     if demuxer_data.running.upgrade().is_none() {
+                        trace!("quit demuxer, running is false");
                         break 'demuxing;
                     }
                 }
@@ -225,14 +268,17 @@ impl FileDecoder {
             }
         }));
 
+        let mut decoder_data: Option<DecoderData> = None;
+        swap(&mut self.decoder_data, &mut decoder_data);
+
         self.threads.push(thread::spawn({
-            let mut decoder_data = decoder_data;
+            let mut decoder_data = decoder_data.unwrap();
             move || -> Result<(), FileDecoderError> {
                 let mut scaler = Context::get(
                     decoder_data.decoder.format(),
                     decoder_data.decoder.width(),
                     decoder_data.decoder.height(),
-                    Pixel::RGB24,
+                    decoder_data.pixel_format,
                     decoder_data.decoder.width(),
                     decoder_data.decoder.height(),
                     Flags::BILINEAR,
@@ -419,6 +465,10 @@ impl FileDecoder {
 
     pub fn video_queue(&self) -> VideoQueue {
         self.video_queue.clone()
+    }
+
+    pub fn pixel_format(&self) -> Pixel {
+        self.pixel_format
     }
 }
 
