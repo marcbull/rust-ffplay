@@ -1,5 +1,6 @@
 extern crate ffmpeg_next as ffmpeg;
 
+use error_stack::Context;
 use ffmpeg::Error;
 use std::{fmt, sync::mpsc::SendError};
 
@@ -22,4 +23,4 @@ impl fmt::Display for FileDecoderError {
     }
 }
 
-impl std::error::Error for FileDecoderError {}
+impl Context for FileDecoderError {}

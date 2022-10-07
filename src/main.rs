@@ -5,7 +5,7 @@ extern crate derive_new;
 
 mod file_decoder;
 
-use error_stack::Result;
+use error_stack::{Context, Result};
 use ffmpeg_next::format::{self, Pixel};
 use file_decoder::FileDecoderError;
 use log::{debug, info, trace};
@@ -89,7 +89,7 @@ impl fmt::Display for FFplayError {
     }
 }
 
-impl std::error::Error for FFplayError {}
+impl Context for FFplayError {}
 
 enum EventState {
     Quit,

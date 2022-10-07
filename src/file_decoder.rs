@@ -156,8 +156,6 @@ impl FileDecoder {
             .video()
             .map_err(FileDecoderError::FfmpegError)?;
 
-        warn!("decoder format {:?}", decoder.format());
-
         let running = Arc::new(true);
 
         let (demuxer_seek_sender, demuxer_seek_receiver): (mpsc::Sender<i64>, mpsc::Receiver<i64>) =
