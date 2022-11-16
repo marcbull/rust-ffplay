@@ -1,18 +1,17 @@
-pub mod error;
-
 extern crate ffmpeg_next;
 use blocking_delay_queue::{BlockingDelayQueue, DelayItem};
-pub use error_stack::{IntoReport, Report, Result, ResultExt};
+pub use error_stack::{Context, IntoReport, Report, Result, ResultExt};
 use ffmpeg_next::{
     format::{input, Pixel},
     mathematics::Rounding,
     media::Type,
     rescale::TIME_BASE,
-    software::scaling::{context::Context, flag::Flags},
+    software::scaling::{context, flag::Flags},
     util::frame::video::Video,
     Packet, {Rational, Rescale},
 };
 use log::{debug, error, trace, warn};
+use std::fmt;
 use std::{
     mem::swap,
     ops::RangeFull,
@@ -22,7 +21,16 @@ use std::{
     time::Instant,
 };
 
-pub use error::FileDecoderError;
+#[derive(Debug)]
+pub struct FileDecoderError;
+
+impl fmt::Display for FileDecoderError {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.write_str("File decoder error")
+    }
+}
+
+impl Context for FileDecoderError {}
 
 type PacketQueue = Arc<BlockingDelayQueue<DelayItem<Option<PacketData>>>>;
 pub type VideoQueue = Arc<BlockingDelayQueue<DelayItem<Option<VideoData>>>>;
@@ -137,24 +145,33 @@ impl FileDecoder {
     const FRAME_QUEUE_SIZE: usize = 3;
 
     pub fn init(&mut self) -> Result<(), FileDecoderError> {
-        ffmpeg_next::init().map_err(FileDecoderError::FfmpegError)?;
-        let input = input(&Path::new(&self.uri)).map_err(FileDecoderError::FfmpegError)?;
+        ffmpeg_next::init()
+            .into_report()
+            .attach_printable("could not be parsed as experiment")
+            .change_context(FileDecoderError)?;
+        let input = input(&Path::new(&self.uri))
+            .into_report()
+            .change_context(FileDecoderError)?;
         let video_stream_input = input
             .streams()
             .best(Type::Video)
             .ok_or(ffmpeg_next::Error::StreamNotFound)
-            .map_err(FileDecoderError::FfmpegError)?;
+            .into_report()
+            .attach_printable("Could not open video stream for file {self.uri:?}")
+            .change_context(FileDecoderError)?;
         let video_stream_index = video_stream_input.index();
         let video_stream_tb = video_stream_input.time_base();
 
         let context_decoder =
             ffmpeg_next::codec::context::Context::from_parameters(video_stream_input.parameters())
-                .map_err(FileDecoderError::FfmpegError)?;
+                .into_report()
+                .change_context(FileDecoderError)?;
 
         let decoder = context_decoder
             .decoder()
             .video()
-            .map_err(FileDecoderError::FfmpegError)?;
+            .into_report()
+            .change_context(FileDecoderError)?;
 
         let running = Arc::new(true);
 
@@ -232,7 +249,8 @@ impl FileDecoder {
                         demuxer_data
                             .stream
                             .seek(seek_to, RangeFull)
-                            .map_err(FileDecoderError::FfmpegError)?;
+                            .into_report()
+                            .change_context(FileDecoderError)?;
                         demuxer_data.packet_queue.clear();
                     }
 
@@ -272,7 +290,7 @@ impl FileDecoder {
         self.threads.push(thread::spawn({
             let mut decoder_data = decoder_data.unwrap();
             move || -> Result<(), FileDecoderError> {
-                let mut scaler = Context::get(
+                let mut scaler = context::Context::get(
                     decoder_data.decoder.format(),
                     decoder_data.decoder.width(),
                     decoder_data.decoder.height(),
@@ -281,7 +299,8 @@ impl FileDecoder {
                     decoder_data.decoder.height(),
                     Flags::BILINEAR,
                 )
-                .map_err(FileDecoderError::FfmpegError)?;
+                .into_report()
+                .change_context(FileDecoderError)?;
 
                 let mut sent_eof = false;
                 let mut last_frame_time: Option<u64> = None;
@@ -303,13 +322,11 @@ impl FileDecoder {
                                         .add(DelayItem::new(None, Instant::now()));
                                     Ok(true)
                                 }
-                                ffmpeg_next::Error::Other { errno } => match errno {
-                                    ffmpeg_next::util::error::EAGAIN => Ok(false),
-                                    _ => Err(Report::new(FileDecoderError::FfmpegError(
-                                        ffmpeg_next::Error::Other { errno },
-                                    ))),
-                                },
-                                _ => Err(Report::new(FileDecoderError::FfmpegError(err))),
+                                ffmpeg_next::Error::Other {
+                                    errno: ffmpeg_next::util::error::EAGAIN,
+                                } => Ok(false),
+                                _ => Err(Report::new(FileDecoderError)
+                                    .attach_printable(format!("{err}"))),
                             },
                             Ok(()) => {
                                 trace!(
@@ -319,7 +336,8 @@ impl FileDecoder {
                                 let mut rgb_frame = Video::empty();
                                 scaler
                                     .run(&decoded, &mut rgb_frame)
-                                    .map_err(FileDecoderError::FfmpegError)?;
+                                    .into_report()
+                                    .change_context(FileDecoderError)?;
                                 rgb_frame.set_pts(decoded.timestamp());
 
                                 let deocded_timestamp = decoded.timestamp().unwrap_or(0);
