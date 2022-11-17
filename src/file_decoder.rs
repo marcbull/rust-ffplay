@@ -147,17 +147,18 @@ impl FileDecoder {
     pub fn init(&mut self) -> Result<(), FileDecoderError> {
         ffmpeg_next::init()
             .into_report()
-            .attach_printable("could not be parsed as experiment")
+            .attach_printable("FFmpeg init failed")
             .change_context(FileDecoderError)?;
         let input = input(&Path::new(&self.uri))
             .into_report()
+            .attach_printable("Cannot open file")
             .change_context(FileDecoderError)?;
         let video_stream_input = input
             .streams()
             .best(Type::Video)
             .ok_or(ffmpeg_next::Error::StreamNotFound)
             .into_report()
-            .attach_printable("Could not open video stream for file {self.uri:?}")
+            .attach_printable("Could not open video stream")
             .change_context(FileDecoderError)?;
         let video_stream_index = video_stream_input.index();
         let video_stream_tb = video_stream_input.time_base();
@@ -165,12 +166,14 @@ impl FileDecoder {
         let context_decoder =
             ffmpeg_next::codec::context::Context::from_parameters(video_stream_input.parameters())
                 .into_report()
+                .attach_printable("Cannot create context from parameters")
                 .change_context(FileDecoderError)?;
 
         let decoder = context_decoder
             .decoder()
             .video()
             .into_report()
+            .attach_printable("Cannot create decoder")
             .change_context(FileDecoderError)?;
 
         let running = Arc::new(true);
@@ -250,6 +253,7 @@ impl FileDecoder {
                             .stream
                             .seek(seek_to, RangeFull)
                             .into_report()
+                            .attach_printable(format!("Cannot seek to {}", seek_to))
                             .change_context(FileDecoderError)?;
                         demuxer_data.packet_queue.clear();
                     }
@@ -300,6 +304,7 @@ impl FileDecoder {
                     Flags::BILINEAR,
                 )
                 .into_report()
+                .attach_printable("Cannot get scaling context")
                 .change_context(FileDecoderError)?;
 
                 let mut sent_eof = false;
@@ -337,6 +342,7 @@ impl FileDecoder {
                                 scaler
                                     .run(&decoded, &mut rgb_frame)
                                     .into_report()
+                                    .attach_printable("Scaling failed")
                                     .change_context(FileDecoderError)?;
                                 rgb_frame.set_pts(decoded.timestamp());
 
@@ -403,11 +409,16 @@ impl FileDecoder {
                             decoder_data
                                 .decoder
                                 .send_packet(&packet_data.packet)
-                                .unwrap();
+                                .into_report()
+                                .change_context(FileDecoderError)?;
                         } else {
                             debug!("Send EOF to decoder");
                             sent_eof = true;
-                            decoder_data.decoder.send_eof().unwrap();
+                            decoder_data
+                                .decoder
+                                .send_eof()
+                                .into_report()
+                                .change_context(FileDecoderError)?;
                         }
                     }
 
@@ -416,8 +427,7 @@ impl FileDecoder {
                         &mut decoder_data.decoder,
                         &mut last_frame_time,
                         &decoder_data.video_queue,
-                    )
-                    .unwrap();
+                    )?;
                     trace!("received frame is_eof={}", is_eof);
                     if is_eof {
                         break 'decoding;
@@ -459,24 +469,27 @@ impl FileDecoder {
         self.height
     }
 
-    pub fn seek(&mut self, seek_to: i64) -> u64 {
+    pub fn seek(&mut self, seek_to: i64) -> Result<u64, FileDecoderError> {
         self.seek_serial += 1;
         self.demuxer_serial_sender
             .as_ref()
             .unwrap()
             .send(self.seek_serial)
-            .unwrap();
+            .into_report()
+            .change_context(FileDecoderError)?;
         self.decoder_serial_sender
             .as_ref()
             .unwrap()
             .send(self.seek_serial)
-            .unwrap();
+            .into_report()
+            .change_context(FileDecoderError)?;
         self.demuxer_seek_sender
             .as_ref()
             .unwrap()
             .send(seek_to)
-            .unwrap();
-        self.seek_serial
+            .into_report()
+            .change_context(FileDecoderError)?;
+        Ok(self.seek_serial)
     }
 
     pub fn video_queue(&self) -> VideoQueue {

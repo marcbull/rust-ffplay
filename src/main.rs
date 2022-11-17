@@ -5,9 +5,8 @@ extern crate derive_new;
 
 mod file_decoder;
 
-use error_stack::{Context, Result};
+use error_stack::{Context, IntoReport, Result, ResultExt};
 use ffmpeg_next::format::{self, Pixel};
-use file_decoder::FileDecoderError;
 use log::{debug, info, trace};
 use partial_min_max::{max, min};
 use sdl2::{
@@ -27,65 +26,58 @@ use std::{
 use crate::file_decoder::VideoData;
 
 #[derive(Debug)]
-pub enum FFplayError {
-    PlayerError(error_stack::Report<FileDecoderError>),
-    SDL2InitError(String),
-    SDL2VideoSubsystemError(String),
-    SDL2WindowBuildError(WindowBuildError),
-    SDL2EventPumpError(String),
-    SDL2CanvasBuildError(IntegerOrSdlError),
-    SDL2TextureLockError(String),
-    SDL2CopyTextureToCanvasError(String),
-    SDL2TextureUpdateError(UpdateTextureError),
-    SDL2TextureUpdateYUVError(UpdateTextureYUVError),
-    VideoSubSystemError(String),
-    TextureValueError(TextureValueError),
+enum SDL2Error {
+    Init(String),
+    VideoSubsystem(String),
+    WindowBuild(WindowBuildError),
+    EventPump(String),
+    CanvasBuild(IntegerOrSdlError),
+    CopyTextureToCanvas(String),
+    TextureUpdate(UpdateTextureError),
+    TextureUpdateYUV(UpdateTextureYUVError),
+    TextureValue(TextureValueError),
 }
+
+impl fmt::Display for SDL2Error {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SDL2Error::Init(err) => fmt.write_fmt(format_args!("SDL2 init error: {}", err)),
+            SDL2Error::VideoSubsystem(err) => {
+                fmt.write_fmt(format_args!("SDL2 video subsystem error: {}", err))
+            }
+            SDL2Error::WindowBuild(err) => {
+                fmt.write_fmt(format_args!("SDL2 window build error: {}", err))
+            }
+            SDL2Error::EventPump(err) => {
+                fmt.write_fmt(format_args!("SDL2 event pump error: {}", err))
+            }
+            SDL2Error::CanvasBuild(err) => {
+                fmt.write_fmt(format_args!("SDL2 canvas build error: {}", err))
+            }
+            SDL2Error::CopyTextureToCanvas(err) => {
+                fmt.write_fmt(format_args!("SDL2 copy texture to canvas error: {}", err))
+            }
+            SDL2Error::TextureUpdate(err) => {
+                fmt.write_fmt(format_args!("SDL2 texture update error: {}", err))
+            }
+            SDL2Error::TextureUpdateYUV(err) => {
+                fmt.write_fmt(format_args!("SDL2 texture update error: {}", err))
+            }
+            SDL2Error::TextureValue(tex_err) => {
+                fmt.write_fmt(format_args!("SDL2 texture value error: {}", tex_err))
+            }
+        }
+    }
+}
+
+impl Context for SDL2Error {}
+
+#[derive(Debug)]
+struct FFplayError;
 
 impl fmt::Display for FFplayError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FFplayError::PlayerError(player_err) => {
-                fmt.write_fmt(format_args!("FFplayError player error: {}", player_err))
-            }
-            FFplayError::SDL2InitError(err) => {
-                fmt.write_fmt(format_args!("FFplayError SDL2 init error: {}", err))
-            }
-            FFplayError::SDL2VideoSubsystemError(err) => fmt.write_fmt(format_args!(
-                "FFplayError SDL2 video subsystem error: {}",
-                err
-            )),
-            FFplayError::SDL2WindowBuildError(err) => {
-                fmt.write_fmt(format_args!("FFplayError SDL2 window build error: {}", err))
-            }
-            FFplayError::SDL2EventPumpError(err) => {
-                fmt.write_fmt(format_args!("FFplayError SDL2 event pump error: {}", err))
-            }
-            FFplayError::SDL2CanvasBuildError(err) => {
-                fmt.write_fmt(format_args!("FFplayError SDL2 canvas build error: {}", err))
-            }
-            FFplayError::SDL2TextureLockError(err) => {
-                fmt.write_fmt(format_args!("FFplayError SDL2 texture lock error: {}", err))
-            }
-            FFplayError::SDL2CopyTextureToCanvasError(err) => fmt.write_fmt(format_args!(
-                "FFplayError SDL2 copy texture to canvas error: {}",
-                err
-            )),
-            FFplayError::SDL2TextureUpdateError(err) => fmt.write_fmt(format_args!(
-                "FFplayError SDL2 texture update error: {}",
-                err
-            )),
-            FFplayError::SDL2TextureUpdateYUVError(err) => fmt.write_fmt(format_args!(
-                "FFplayError SDL2 texture update error: {}",
-                err
-            )),
-            FFplayError::VideoSubSystemError(err) => {
-                fmt.write_fmt(format_args!("FFplayError video subsystem error: {}", err))
-            }
-            FFplayError::TextureValueError(tex_err) => {
-                fmt.write_fmt(format_args!("FFplayError texture value error: {}", tex_err))
-            }
-        }
+        fmt.write_str("FFplay error")
     }
 }
 
@@ -103,10 +95,15 @@ fn sdl_init(
     window_width: u32,
     window_height: u32,
 ) -> Result<(WindowCanvas, EventPump), FFplayError> {
-    let sdl_context = sdl2::init().map_err(FFplayError::SDL2InitError)?;
+    let sdl_context = sdl2::init()
+        .map_err(SDL2Error::Init)
+        .into_report()
+        .change_context(FFplayError)?;
     let video_subsystem = sdl_context
         .video()
-        .map_err(FFplayError::SDL2VideoSubsystemError)?;
+        .map_err(SDL2Error::VideoSubsystem)
+        .into_report()
+        .change_context(FFplayError)?;
 
     info!("create window with {}x{}", window_width, window_height);
     let window = video_subsystem
@@ -116,18 +113,24 @@ fn sdl_init(
         .maximized()
         .allow_highdpi()
         .build()
-        .map_err(FFplayError::SDL2WindowBuildError)?;
+        .map_err(SDL2Error::WindowBuild)
+        .into_report()
+        .change_context(FFplayError)?;
 
     let mut canvas = window
         .into_canvas()
         .build()
-        .map_err(FFplayError::SDL2CanvasBuildError)?;
+        .map_err(SDL2Error::CanvasBuild)
+        .into_report()
+        .change_context(FFplayError)?;
     canvas.set_draw_color(Color::RGB(0, 0, 0));
     canvas.clear();
     canvas.present();
     let event_pump = sdl_context
         .event_pump()
-        .map_err(FFplayError::SDL2EventPumpError)?;
+        .map_err(SDL2Error::EventPump)
+        .into_report()
+        .change_context(FFplayError)?;
 
     Ok((canvas, event_pump))
 }
@@ -149,10 +152,11 @@ fn main() -> Result<(), FFplayError> {
     let mut player = player_builder
         .pixel_format(Pixel::YUV420P)
         .build()
-        .map_err(FFplayError::PlayerError)?;
+        .change_context(FFplayError)?;
+    //.map_err(FFplayError::PlayerError)?;
 
-    player.init().map_err(FFplayError::PlayerError)?;
-    player.start().map_err(FFplayError::PlayerError)?;
+    player.init().change_context(FFplayError)?;
+    player.start().change_context(FFplayError)?;
 
     let def_window_width: u32 = 1920;
     let def_window_height: u32 = 1080;
@@ -166,7 +170,9 @@ fn main() -> Result<(), FFplayError> {
             player.width(),
             player.height(),
         )
-        .map_err(FFplayError::TextureValueError)?;
+        .map_err(SDL2Error::TextureValue)
+        .into_report()
+        .change_context(FFplayError)?;
 
     let video_queue = player.video_queue();
 
@@ -258,7 +264,7 @@ fn main() -> Result<(), FFplayError> {
                     let seek_to = last_pts as i64 - seek_secs;
                     debug!("seek to {} (last_pts={})", seek_to, last_pts);
                     last_pts = seek_to as u64;
-                    seek_serial = player.seek(seek_to);
+                    seek_serial = player.seek(seek_to).change_context(FFplayError)?;
                     need_update = true;
                     debug!("seek to {} (serial {})", seek_to, seek_serial);
                     continue 'running;
@@ -267,7 +273,7 @@ fn main() -> Result<(), FFplayError> {
                     let seek_to = last_pts as i64 + seek_secs;
                     debug!("seek to {} (last_pts={})", seek_to, last_pts);
                     last_pts = seek_to as u64;
-                    seek_serial = player.seek(seek_to);
+                    seek_serial = player.seek(seek_to).change_context(FFplayError)?;
                     need_update = true;
                     debug!("seek to {} (serial {})", seek_to, seek_serial);
                     continue 'running;
@@ -318,7 +324,9 @@ fn main() -> Result<(), FFplayError> {
                         video_data.video_frame.data(0),
                         video_data.video_frame.stride(0),
                     )
-                    .map_err(FFplayError::SDL2TextureUpdateError)?;
+                    .map_err(SDL2Error::TextureUpdate)
+                    .into_report()
+                    .change_context(FFplayError)?;
             } else if video_data.video_frame.planes() == 2 {
                 let y_plane = video_data.video_frame.data(0);
                 let y_stride = video_data.video_frame.stride(0);
@@ -331,7 +339,9 @@ fn main() -> Result<(), FFplayError> {
                     .update_yuv(
                         None, y_plane, y_stride, u_plane, u_stride, v_plane, v_stride,
                     )
-                    .map_err(FFplayError::SDL2TextureUpdateYUVError)?;
+                    .map_err(SDL2Error::TextureUpdateYUV)
+                    .into_report()
+                    .change_context(FFplayError)?;
             } else {
                 assert!(video_data.video_frame.planes() == 3);
 
@@ -346,12 +356,16 @@ fn main() -> Result<(), FFplayError> {
                     .update_yuv(
                         None, y_plane, y_stride, u_plane, u_stride, v_plane, v_stride,
                     )
-                    .map_err(FFplayError::SDL2TextureUpdateYUVError)?;
+                    .map_err(SDL2Error::TextureUpdateYUV)
+                    .into_report()
+                    .change_context(FFplayError)?;
             }
 
             canvas
                 .copy(&texture, None, None)
-                .map_err(FFplayError::SDL2CopyTextureToCanvasError)?;
+                .map_err(SDL2Error::CopyTextureToCanvas)
+                .into_report()
+                .change_context(FFplayError)?;
 
             trace!(
                 "ffplay: present frame with pts {}",
