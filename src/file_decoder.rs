@@ -1,7 +1,7 @@
-extern crate ffmpeg_next;
+extern crate ffmpeg_rs;
 use blocking_delay_queue::{BlockingDelayQueue, DelayItem};
 pub use error_stack::{Context, IntoReport, Report, Result, ResultExt};
-use ffmpeg_next::{
+use ffmpeg_rs::{
     format::{input, Pixel},
     mathematics::Rounding,
     media::Type,
@@ -102,7 +102,7 @@ pub struct FileDecoder {
 #[derive(new)]
 #[allow(clippy::too_many_arguments)]
 struct DemuxerData {
-    stream: ffmpeg_next::format::context::Input,
+    stream: ffmpeg_rs::format::context::Input,
     stream_index: usize,
     time_base: Rational,
     #[new(value = "0")]
@@ -116,7 +116,7 @@ struct DemuxerData {
 #[derive(new)]
 struct DecoderData {
     pixel_format: Pixel,
-    decoder: ffmpeg_next::decoder::Video,
+    decoder: ffmpeg_rs::decoder::Video,
     time_base: Rational,
     packet_queue: PacketQueue,
     video_queue: VideoQueue,
@@ -145,7 +145,7 @@ impl FileDecoder {
     const FRAME_QUEUE_SIZE: usize = 3;
 
     pub fn init(&mut self) -> Result<(), FileDecoderError> {
-        ffmpeg_next::init()
+        ffmpeg_rs::init()
             .into_report()
             .attach_printable("FFmpeg init failed")
             .change_context(FileDecoderError)?;
@@ -156,7 +156,7 @@ impl FileDecoder {
         let video_stream_input = input
             .streams()
             .best(Type::Video)
-            .ok_or(ffmpeg_next::Error::StreamNotFound)
+            .ok_or(ffmpeg_rs::Error::StreamNotFound)
             .into_report()
             .attach_printable("Could not open video stream")
             .change_context(FileDecoderError)?;
@@ -164,7 +164,7 @@ impl FileDecoder {
         let video_stream_tb = video_stream_input.time_base();
 
         let context_decoder =
-            ffmpeg_next::codec::context::Context::from_parameters(video_stream_input.parameters())
+            ffmpeg_rs::codec::context::Context::from_parameters(video_stream_input.parameters())
                 .into_report()
                 .attach_printable("Cannot create context from parameters")
                 .change_context(FileDecoderError)?;
@@ -312,7 +312,7 @@ impl FileDecoder {
 
                 let mut receive_and_process_decoded_frame =
                     |current_serial: &u64,
-                     decoder: &mut ffmpeg_next::decoder::Video,
+                     decoder: &mut ffmpeg_rs::decoder::Video,
                      last_frame_time: &mut Option<u64>,
                      video_producer_queue: &VideoQueue|
                      -> Result<bool, FileDecoderError> {
@@ -320,15 +320,15 @@ impl FileDecoder {
                         let status = decoder.receive_frame(&mut decoded);
                         match status {
                             Err(err) => match err {
-                                ffmpeg_next::Error::Eof => {
+                                ffmpeg_rs::Error::Eof => {
                                     debug!("Decoder returned EOF, send EOF frame");
                                     decoder_data
                                         .video_queue
                                         .add(DelayItem::new(None, Instant::now()));
                                     Ok(true)
                                 }
-                                ffmpeg_next::Error::Other {
-                                    errno: ffmpeg_next::util::error::EAGAIN,
+                                ffmpeg_rs::Error::Other {
+                                    errno: ffmpeg_rs::util::error::EAGAIN,
                                 } => Ok(false),
                                 _ => Err(Report::new(FileDecoderError)
                                     .attach_printable(format!("{err}"))),

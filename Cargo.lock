@@ -125,10 +125,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "ffmpeg-next"
-version = "5.1.1"
+name = "ffmpeg-rs"
+version = "5.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a80971eee67be0079a1c8890bde68226fe9bd0441740fd6ddd0cee131486b321"
+checksum = "f0e17f67b535f0917a6790db6046293c1f15b7800702dd092bdd8271d023d586"
 dependencies = [
  "bitflags",
  "ffmpeg-sys-next",
@@ -157,7 +157,7 @@ dependencies = [
  "derive-new",
  "env_logger",
  "error-stack",
- "ffmpeg-next",
+ "ffmpeg-rs",
  "log",
  "partial-min-max",
  "sdl2",

@@ -6,7 +6,7 @@ extern crate derive_new;
 mod file_decoder;
 
 use error_stack::{Context, IntoReport, Result, ResultExt};
-use ffmpeg_next::format::{self, Pixel};
+use ffmpeg_rs::format::{self, Pixel};
 use log::{debug, info, trace};
 use partial_min_max::{max, min};
 use sdl2::{

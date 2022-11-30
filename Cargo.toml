@@ -10,7 +10,7 @@ edition = "2021"
 log = "0.4.17"
 derive-new = "0.5.9"
 blocking-delay-queue = { path = "./blocking-delay-queue" }
-ffmpeg-next = "5.1.1"
+ffmpeg-rs = "5.2.1"
 error-stack = "0.2.4"
 # crates only used in main
 env_logger = "0.9.3"
